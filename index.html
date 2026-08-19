@@ -440,6 +440,10 @@ async function newInvoiceView() {
   const condTexts = [...new Set([
     ...conds.sort((a, b) => (b.uses || 0) - (a.uses || 0)).map((c) => c.text),
     "Due on receipt", "Net 7", "Net 15", "Net 30", "Net 45", "Net 60"])];
+  const startDraft = draftFrom;
+  draftFrom = null;
+  const editing = editFrom;
+  editFrom = null;
   $("#view").innerHTML = `
   <h2>${editing ? "Edit invoice #" + editing.num : "New invoice"}</h2>
   <div class="card">
@@ -473,10 +477,6 @@ async function newInvoiceView() {
   </div>`;
   const itemByName = Object.fromEntries(
     items.map((i) => [i.display_name || i.name, i]));
-  const startDraft = draftFrom;
-  draftFrom = null;
-  const editing = editFrom;
-  editFrom = null;
   const custByName = Object.fromEntries(
     customers.map((c) => [c.display_name || c.name, c]));
   $("#cname").onchange = () => {
