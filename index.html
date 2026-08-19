@@ -351,13 +351,15 @@ function unlockView(msg = "") {
       }
       const mir = await db.enableMirror("invoiceflow-solo-mirror");
       if (!mir.completeOnce) {
-        // One background pass makes the mirror complete; from then on
-        // every page renders from IndexedDB — hits AND absence — and
-        // the network is only touched by writes.
-        db.sync().then((secs) => {
-          toast(`first sync done (${Math.round(secs)}s) — reads are now local`);
-          go();
-        }).catch((e) => console.error("first sync failed:", e));
+        // ONE clean gate: letting the user in before the mirror is
+        // complete meant reads were network-slow for a while and then
+        // suddenly local-fast — varying reaction times train double
+        // clicks. First unlock waits and says so; every unlock after
+        // is instant because the mirror persists.
+        $("#umsg").innerHTML = '<span class="spin"></span> first unlock: ' +
+          'pulling your books into this browser\u2026';
+        const secs = await db.sync();
+        toast(`mirror complete (${Math.round(secs)}s) — every page is local from here on`);
       } else if (db._st.writers.length > 1) {
         db.sync().catch(() => {});      // refresh the multi-writer window
       }
