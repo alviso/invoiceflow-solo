@@ -313,21 +313,88 @@ function unlockView(msg = "") {
 /* ----------------------------- dashboard ----------------------------- */
 async function dashView() {
   const inv = await listKind(K.invoice);
+  const today = new Date().toISOString().slice(0, 10);
+  const mo = today.slice(0, 7);
+  const fallbackCur = profile?.default_currency || "USD";
+  // sums NEVER add across currencies — grouped and shown per currency
+  const byCur = (rows) => {
+    const m = {};
+    for (const r of rows) {
+      const c = r.currency || fallbackCur;
+      m[c] = (m[c] || 0) + (r.total || 0);
+    }
+    const parts = Object.entries(m).map(([c, v]) => money(v, c));
+    return parts.length ? parts.join("<br>") : money(0, fallbackCur);
+  };
+  const live = inv.filter((i) => i.status !== "cancelled");
   const open = inv.filter((i) => i.status === "sent");
   const paid = inv.filter((i) => i.status === "paid");
-  const cur = profile?.default_currency || "USD";
-  const sum = (a) => a.reduce((s, i) => s + (i.total || 0), 0);
+  const overdue = open.filter((i) => (i.due_date || "9999") < today);
+  const thisMonth = live.filter((i) =>
+    (i.issue_date || "").startsWith(mo));
+  const recent = [...inv].sort((a, b) =>
+    (b.created_at || 0) - (a.created_at || 0)).slice(0, 5);
+  const months = [];
+  const now = new Date();
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 15);
+    months.push([d.toISOString().slice(0, 7),
+      d.toLocaleString(undefined, { month: "short" })]);
+  }
+  const paidByMonth = months.map(([m2]) => paid
+    .filter((i) => (i.issue_date || "").startsWith(m2))
+    .reduce((s2, i) => s2 + (i.total || 0), 0));
+  const maxM = Math.max(...paidByMonth, 1);
   $("#view").innerHTML = `
   <h2>Dashboard</h2>
+  ${profile && profile.name ? "" : `<div class="card" style="border-color:var(--warn)">
+    <p><b>Finish your setup:</b> add your company details in
+    <a onclick="return false" id="gosettings">Settings</a> — they appear
+    on every printed invoice.</p></div>`}
   <div class="card">
-    <span class="stat"><b>${inv.length}</b><span>invoices</span></span>
-    <span class="stat"><b>${money(sum(open), cur)}</b><span>outstanding</span></span>
-    <span class="stat"><b>${money(sum(paid), cur)}</b><span>collected</span></span>
+    <span class="stat"><b>${thisMonth.length}</b><span>this month</span></span>
+    <span class="stat"><b>${byCur(thisMonth)}</b><span>invoiced (month)</span></span>
+    <span class="stat"><b>${byCur(open)}</b><span>outstanding</span></span>
+    <span class="stat"><b>${byCur(paid)}</b><span>collected</span></span>
+    <span class="stat"><b style="${overdue.length ? "color:var(--bad)" : ""}">${overdue.length}</b><span>overdue</span></span>
   </div>
-  <div class="card"><p class="muted">Everything on this page was
-  decrypted in this tab. The ${db.network().length} nodes storing it can
-  count your records, never read them — and this page has no server to
-  go down.</p></div>`;
+  ${overdue.length ? `<div class="card" style="border-color:var(--bad)">
+    <h2 style="font-size:16px;color:var(--bad)">Overdue</h2>
+    <table>${overdue.map((r) => `
+      <tr class="click" data-rid="${r._rid}">
+        <td>${r.num}</td><td>${esc(r.customer_name)}</td>
+        <td>due ${esc(r.due_date)}</td>
+        <td class="right">${money(r.total, r.currency)}</td></tr>`).join("")}
+    </table></div>` : ""}
+  <div class="card">
+    <h2 style="font-size:16px">Collected, last 6 months</h2>
+    <div style="display:flex;gap:10px;align-items:flex-end;height:86px">
+      ${months.map(([, label], i) => `
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%">
+        <div title="${money(paidByMonth[i], fallbackCur)}"
+          style="height:${Math.round(paidByMonth[i] / maxM * 62)}px;
+          background:var(--acc);opacity:.7;border-radius:5px 5px 0 0;
+          min-height:2px"></div>
+        <div class="muted" style="font-size:11px;text-align:center;margin-top:4px">${label}</div>
+      </div>`).join("")}
+    </div>
+  </div>
+  <div class="card">
+    <h2 style="font-size:16px">Recent invoices</h2>
+    <table>${recent.map((r) => `
+      <tr class="click" data-rid="${r._rid}">
+        <td>${r.num}</td><td>${esc(r.customer_name)}</td>
+        <td>${esc(r.issue_date)}</td>
+        <td class="right">${money(r.total, r.currency)}</td>
+        <td><span class="pill ${r.status}">${r.status}</span></td></tr>`).join("") ||
+      '<tr><td class="muted">No invoices yet.</td></tr>'}
+    </table></div>
+  <p class="muted">Everything on this page was decrypted in this tab.
+  The ${db.network().length} nodes storing it can count your records,
+  never read them — and there is no server to go down.</p>`;
+  if ($("#gosettings")) $("#gosettings").onclick = () => go("settings");
+  for (const tr of document.querySelectorAll("tr.click"))
+    tr.onclick = () => go("invoice", tr.dataset.rid);
 }
 
 /* ----------------------------- invoices ------------------------------ */
