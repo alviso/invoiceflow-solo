@@ -378,7 +378,7 @@ async function newInvoiceView() {
   const cur = profile?.default_currency || "USD";
   const condTexts = [...new Set([
     ...conds.sort((a, b) => (b.uses || 0) - (a.uses || 0)).map((c) => c.text),
-    "Due on receipt", "Net 7", "Net 15", "Net 30"])];
+    "Due on receipt", "Net 7", "Net 15", "Net 30", "Net 45", "Net 60"])];
   $("#view").innerHTML = `
   <h2>New invoice</h2>
   <div class="card">
@@ -516,12 +516,19 @@ async function newInvoiceView() {
 function entityView(kindNo, title, fields, cols) {
   return async () => {
     const rows = await listKind(kindNo);
+    const terms = fields.some((f) => f.termlist)
+      ? [...new Set([...(await listKind(K.condition)).map((c) => c.text),
+          "Due on receipt", "Net 7", "Net 15", "Net 30", "Net 45",
+          "Net 60"])]
+      : null;
     let editRid = null;
     $("#view").innerHTML = `
     <h2>${title}</h2>
-    <div class="card"><div class="grid2">
+    <div class="card">${terms ? `<datalist id="termsdl">${terms.map((t) =>
+      `<option value="${esc(t)}">`).join("")}</datalist>` : ""}<div class="grid2">
       ${fields.map((f) => `<div><label>${f.label}${f.req ? " *" : ""}</label>
-        <input id="f-${f.key}" ${f.type ? `type="${f.type}"` : ""}></div>`).join("")}
+        <input id="f-${f.key}" ${f.type ? `type="${f.type}"` : ""}
+          ${f.termlist ? 'list="termsdl"' : ""}></div>`).join("")}
     </div><p style="margin-top:12px" class="row">
       <button id="save-ent">Add</button>
       <button id="cancel-ent" class="quiet" style="display:none">Cancel</button>
@@ -581,7 +588,7 @@ const customersView = entityView(K.customer, "Customers", [
   { key: "postal_code", label: "Postal code" },
   { key: "country", label: "Country" },
   { key: "tax_id", label: "Tax ID" },
-  { key: "payment_terms", label: "Payment terms (e.g. Net 45)" }],
+  { key: "payment_terms", label: "Payment terms", termlist: 1 }],
   [{ key: "display_name", label: "Name" }, { key: "city", label: "City" },
    { key: "country", label: "Country" }, { key: "tax_id", label: "Tax ID" }]);
 const itemsView = entityView(K.item, "Items", [
