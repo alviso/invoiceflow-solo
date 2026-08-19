@@ -121,12 +121,12 @@
   <header id="chrome" style="display:none">
     <h1>Invoice<b>Flow</b> <span class="muted">Solo</span></h1>
     <nav id="nav">
-      <a href="#/dash">Dashboard</a>
-      <a href="#/invoices">Invoices</a>
-      <a href="#/new">New invoice</a>
-      <a href="#/customers">Customers</a>
-      <a href="#/items">Items</a>
-      <a href="#/settings">Settings</a>
+      <a data-page="dash">Dashboard</a>
+      <a data-page="invoices">Invoices</a>
+      <a data-page="new">New invoice</a>
+      <a data-page="customers">Customers</a>
+      <a data-page="items">Items</a>
+      <a data-page="settings">Settings</a>
     </nav>
     <span class="push" id="netinfo"></span>
   </header>
@@ -238,8 +238,7 @@ function unlockView(msg = "") {
       $("#chrome").style.display = "flex";
       $("#netinfo").textContent =
         `${db.network().length} nodes · ${db._st.writers.length} writer(s)`;
-      location.hash = profile ? "#/dash" : "#/settings";
-      route();
+      go(profile ? "dash" : "settings");
       if (!profile) toast("welcome — set up your company first");
     } catch (e) {
       $("#umsg").textContent = e.message;
@@ -287,13 +286,13 @@ async function invoicesView() {
     '<tr><td colspan="5" class="muted">No invoices yet.</td></tr>'}
   </table></div>`;
   for (const tr of document.querySelectorAll("tr.click"))
-    tr.onclick = () => { location.hash = "#/invoice/" + tr.dataset.rid; };
+    tr.onclick = () => go("invoice", tr.dataset.rid);
 }
 
 async function invoiceDetail(rid) {
   const all = await listKind(K.invoice);
   const r = all.find((x) => x._rid === rid);
-  if (!r) { location.hash = "#/invoices"; return; }
+  if (!r) return go("invoices");
   const flow = { created: "sent", sent: "paid" };
   $("#view").innerHTML = `
   <h2>Invoice #${r.num}
@@ -328,9 +327,11 @@ async function invoiceDetail(rid) {
   </div>`;
   $("#pdf").onclick = () => { renderPrint(r); window.print(); };
   const setStatus = async (status) => {
-    await replace({ ...strip(r), status }, r._rid);
-    toast(`invoice #${r.num} ${status}`);
-    location.hash = "#/invoices";
+    try {
+      await replace({ ...strip(r), status }, r._rid);
+      toast(`invoice #${r.num} ${status}`);
+      go("invoices");
+    } catch (e) { console.error(e); toast("refused: " + e.message); }
   };
   if ($("#advance")) $("#advance").onclick = () => setStatus(flow[r.status]);
   if ($("#cancel")) $("#cancel").onclick = () => setStatus("cancelled");
@@ -483,7 +484,7 @@ async function newInvoiceView() {
         await db.insert({ kind: K.customer, name: cname.slice(0, 6).toLowerCase(),
           display_name: cname, address: "", city: "", country: "" });
       toast(`invoice #${num} created`);
-      location.hash = "#/invoices";
+      go("invoices");
     } catch (e) {
       toast(e.message);
       $("#save").disabled = false;
@@ -511,19 +512,24 @@ function crudView(kindNo, title, fields) {
       `<tr><td colspan="${fields.length + 1}" class="muted">None yet.</td></tr>`}
     </table></div>`;
     $("#add").onclick = async () => {
-      const rec = { kind: kindNo };
-      for (const f of fields) {
-        const v = $(`#f-${f.key}`).value;
-        rec[f.show || f.key] = f.type === "number" ? +v || 0 : v;
-      }
-      const nm = rec.display_name || rec.name || "";
-      if (!nm) return toast("a name is required");
-      rec.name = nm.slice(0, 6).toLowerCase();     // the indexed prefix
-      await db.insert(rec);
-      route();
+      try {
+        const rec = { kind: kindNo };
+        for (const f of fields) {
+          const v = $(`#f-${f.key}`).value;
+          rec[f.show || f.key] = f.type === "number" ? +v || 0 : v;
+        }
+        const nm = rec.display_name || rec.name || "";
+        if (!nm) return toast("a name is required");
+        rec.name = nm.slice(0, 6).toLowerCase();   // the indexed prefix
+        await db.insert(rec);
+        go();
+      } catch (e) { console.error(e); toast("refused: " + e.message); }
     };
     for (const a of document.querySelectorAll("a.del"))
-      a.onclick = async () => { await db.delete(a.dataset.rid); route(); };
+      a.onclick = async () => {
+        try { await db.delete(a.dataset.rid); go(); }
+        catch (e) { console.error(e); toast("refused: " + e.message); }
+      };
   };
 }
 const customersView = crudView(K.customer, "Customers", [
@@ -549,7 +555,9 @@ async function settingsView() {
     ${F.map(([k, l]) => `<div><label>${l}</label>
       <input id="s-${k}" value="${esc(p[k] || "")}"></div>`).join("")}
     <div><label>Logo (small image)</label><input id="s-logo" type="file"
-      accept="image/*"></div>
+      accept="image/*">
+      ${p.logo_base64 ? `<img src="${p.logo_base64}"
+        style="max-height:42px;margin-top:8px;display:block">` : ""}</div>
   </div>
   <p style="margin-top:14px"><button id="save">Save profile</button></p></div>
   <div class="card">
@@ -569,42 +577,60 @@ async function settingsView() {
     $("#invout").select();
   };
   $("#save").onclick = async () => {
-    const rec = { kind: K.profile, name: "co", saved_at: Date.now() };
-    for (const [k] of F) rec[k] = $(`#s-${k}`).value;
-    const file = $("#s-logo").files[0];
-    if (file) {
-      if (file.size > 300_000) return toast("logo too large (300KB max)");
-      rec.logo_base64 = await new Promise((res) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result);
-        r.readAsDataURL(file);
-      });
-    } else rec.logo_base64 = p.logo_base64 || null;
-    await replace(rec, p._rid);
-    await loadProfile();
-    toast("profile saved");
+    $("#save").disabled = true;
+    try {
+      const rec = { kind: K.profile, name: "co", saved_at: Date.now() };
+      for (const [k] of F) rec[k] = $(`#s-${k}`).value;
+      const file = $("#s-logo").files[0];
+      if (file) {
+        if (file.size > 300_000)
+          throw new Error("logo too large (300KB max)");
+        rec.logo_base64 = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = () => rej(new Error("could not read the image"));
+          r.readAsDataURL(file);
+        });
+      } else rec.logo_base64 = (profile && profile.logo_base64) || null;
+      // fresh rid, not the render-time copy: the stale copy made every
+      // save after the first insert a duplicate and delete nothing
+      await replace(rec, profile && profile._rid);
+      await loadProfile();
+      toast("profile saved");
+      go();
+    } catch (e) {
+      console.error(e);
+      toast("refused: " + e.message);
+    } finally { $("#save").disabled = false; }
   };
 }
 
 /* ------------------------------ router ------------------------------- */
 const routes = { dash: dashView, invoices: invoicesView, new: newInvoiceView,
   customers: customersView, items: itemsView, settings: settingsView };
-async function route() {
+// In-memory routing on purpose: under loader.html#<sha256> the URL hash
+// IS the application's integrity address — a hash router overwrote it,
+// and reloading loader.html#/customers had no app to verify.
+let cur = { page: "dash", arg: null };
+async function go(page, arg) {
+  if (page) cur = { page, arg: arg ?? null };
   if (!db) return unlockView();
-  const [, page, arg] = location.hash.split("/");
   for (const a of document.querySelectorAll("#nav a"))
-    a.classList.toggle("on", a.hash === `#/${page}`);
+    a.classList.toggle("on", a.dataset.page === cur.page);
   try {
-    if (page === "invoice" && arg) await invoiceDetail(arg);
-    else await (routes[page] || dashView)();
+    if (cur.page === "invoice" && cur.arg) await invoiceDetail(cur.arg);
+    else await (routes[cur.page] || dashView)();
   } catch (e) {
+    console.error(e);
     $("#view").innerHTML = `<div class="card"><p><b>Refused:</b>
       ${esc(e.message)}</p><p class="muted">The engine refuses rather
       than answering wrong — usually a degraded network moment.
-      <a onclick="location.reload()">Retry</a></p></div>`;
+      <a id="retry">Retry</a></p></div>`;
+    $("#retry").onclick = () => go();
   }
 }
-window.onhashchange = route;
+for (const a of document.querySelectorAll("#nav a"))
+  a.onclick = () => go(a.dataset.page);
 unlockView();
 </script>
 </body>
