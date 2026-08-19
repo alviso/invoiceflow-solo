@@ -174,7 +174,7 @@
 <div id="print-root"></div>
 
 <script type="module">
-import { Owner, idbAdapter } from "./blindrange.js";
+import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js";
 
 /* ------------------------------------------------------------------ *
  * One database, one schema, a `kind` discriminator — five entity
@@ -340,16 +340,35 @@ function unlockView(msg = "") {
     const adapter = idbAdapter("invoiceflow-solo");
     try {
       const inv = $("#inv").value.trim();
-      try {
-        db = await Owner.open(adapter, pass, { gateway: NET.gateway });
-      } catch (e) {
-        if (!String(e).includes("no state stored")) throw e;
-        db = inv
-          ? await Owner.accept(adapter, pass, inv, { gateway: NET.gateway })
-          : await Owner.create(adapter, pass, SCHEMA, NET.bootstrap,
+      const hasState = (await adapter.load()) !== null;
+      let sessionOnly = false;
+      if (inv && hasState) {
+        // This device already has its own ledger: an invite opens the
+        // OTHER ledger as a session-only view — memory state, memory
+        // mirror, nothing on this device touched. (Before this rule,
+        // the invite was silently ignored and the wrong-passphrase
+        // failure had an empty message: "nothing happened".)
+        sessionOnly = true;
+        db = await Owner.accept(memoryAdapter(), pass, inv,
+          { gateway: NET.gateway });
+      } else if (inv) {
+        // fresh device + invite = the recovery-kit flow: join
+        // permanently under a new passphrase
+        db = await Owner.accept(adapter, pass, inv, { gateway: NET.gateway });
+      } else {
+        try {
+          db = await Owner.open(adapter, pass, { gateway: NET.gateway });
+        } catch (e) {
+          if (String(e).includes("no state stored")) {
+            db = await Owner.create(adapter, pass, SCHEMA, NET.bootstrap,
               { networkSecret: NET.networkSecret, gateway: NET.gateway });
+          } else if (e && (e.name === "OperationError" || !e.message)) {
+            throw new Error("wrong passphrase for this device's ledger");
+          } else throw e;
+        }
       }
-      const mir = await db.enableMirror("invoiceflow-solo-mirror");
+      const mir = await db.enableMirror(sessionOnly ? null
+        : "invoiceflow-solo-mirror");
       if (!mir.completeOnce) {
         // ONE clean gate: letting the user in before the mirror is
         // complete meant reads were network-slow for a while and then
@@ -366,7 +385,8 @@ function unlockView(msg = "") {
       await loadProfile();
       $("#chrome").style.display = "flex";
       $("#netinfo").textContent =
-        `${db.network().length} nodes · ${db._st.writers.length} writer(s)`;
+        `${db.network().length} nodes · ${db._st.writers.length} writer(s)` +
+        (sessionOnly ? " · session-only view" : "");
       go(profile ? "dash" : "settings");
       if (!profile) toast("welcome — set up your company first");
     } catch (e) {
