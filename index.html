@@ -355,7 +355,7 @@ async function invoiceDetail(rid) {
   </div>`;
   $("#pdf").onclick = () => { renderPrint(r); window.print(); };
   const setStatus = (status) => guard(async () => {
-    await replace({ ...strip(r), status }, r._rid);
+    await replace({ ...strip(r), status }, r);
     toast(`invoice #${r.num} ${status}`);
     go("invoices");
   });
@@ -507,7 +507,7 @@ async function newInvoiceView() {
       const issue = $("#idate").value || today;
       const due = new Date(Date.parse(issue) + dueDays * 86400000)
         .toISOString().slice(0, 10);
-      await db.insert({
+      await replace({
         kind: K.invoice, num: Math.min(num, NUM_MAX),
         day: Math.min(toDay(issue), DAY_MAX),
         name: cname.slice(0, 6).toLowerCase(),
@@ -522,14 +522,14 @@ async function newInvoiceView() {
         currency: $("#cur").value || "USD",
         issue_date: issue, due_date: due,
         payment_conditions: condText, footer_notes: $("#notes").value,
-        status: "created", created_at: Date.now() });
+        status: "created", created_at: Date.now() }, null);
       if (condText && !conds.find((c) => c.text === condText))
-        await db.insert({ kind: K.condition, text: condText, uses: 1 });
+        await replace({ kind: K.condition, text: condText, uses: 1 }, null);
       if (!customers.find((c) => (c.display_name || c.name) === cname))
-        await db.insert({ kind: K.customer,
+        await replace({ kind: K.customer,
           name: cname.slice(0, 6).toLowerCase(), display_name: cname,
           email: "", phone: "", address: "", city: "", postal_code: "",
-          country: "", tax_id: "" });
+          country: "", tax_id: "" }, null);
       toast(`invoice #${num} created`);
       go("invoices");
     } catch (e) {
@@ -593,7 +593,7 @@ function entityView(kindNo, title, fields, cols) {
       }
       if (!rec.display_name) return toast("a name is required");
       rec.name = rec.display_name.slice(0, 6).toLowerCase();
-      await replace(rec, editRid);
+      await replace(rec, editRid ? byRid[editRid] : null);
       go();
     });
     for (const a of document.querySelectorAll("a.edit"))
@@ -677,7 +677,7 @@ async function settingsView() {
     if (!text) return toast("type a term first");
     if (conds.find((c) => c.text.toLowerCase() === text.toLowerCase()))
       return toast("that term already exists");
-    await db.insert({ kind: K.condition, text, uses: 0 });
+    await replace({ kind: K.condition, text, uses: 0 }, null);
     toast(`"${text}" saved`);
     go();
   });
@@ -706,7 +706,7 @@ async function settingsView() {
       } else rec.logo_base64 = (profile && profile.logo_base64) || null;
       // fresh rid, not the render-time copy: the stale copy made every
       // save after the first insert a duplicate and delete nothing
-      await replace(rec, profile && profile._rid);
+      await replace(rec, profile);
       await loadProfile();
       toast("profile saved");
       go();
