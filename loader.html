@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<!-- =====================================================================
+     blindrange app loader — the only static file any app ever needs.
+
+     Usage:  loader.html#<sha256-of-app>
+
+     Fetches the app's chunks from the public blindrange network (they
+     are stored AS DATABASE ENTRIES, keyed by content hash), verifies
+     the hash IN THIS BROWSER, and only then renders. Nobody can swap
+     the app under you: the address IS the integrity check — the
+     defense dapp frontends never had. A new version is a new hash; an
+     old link keeps loading exactly the bytes it always did, forever,
+     from cache after the first visit.
+
+     These ~80 lines are the whole trust root. Read them.
+     ===================================================================== -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>loading…</title>
+<style>
+  body { background:#0f1115; color:#8b93a1; display:grid;
+         place-items:center; height:100vh; margin:0;
+         font:14px/1.6 ui-monospace, Menlo, monospace; }
+  b { color:#5cc8ff; font-weight:normal; }
+</style>
+</head>
+<body>
+<div id="s">resolving application…</div>
+<script type="module">
+const GATEWAYS = ["https://blindrange.dev/api"];
+const SECRET = "blindrange-public";
+const S = document.getElementById("s");
+const hexhash = async (buf) =>
+  [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+const sign = async (body) => {
+  const k = await crypto.subtle.importKey("raw",
+    new TextEncoder().encode(SECRET),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, body))]
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+};
+
+async function mget(keys) {
+  // through the gateway: POST /fwd {addr: seed, path: /mget}
+  for (const gw of GATEWAYS) {
+    try {
+      const inner = JSON.stringify({ keys,
+        nonce: [...crypto.getRandomValues(new Uint8Array(16))]
+          .map((b) => b.toString(16).padStart(2, "0")).join("") });
+      const env = new TextEncoder().encode(JSON.stringify(
+        { addr: "seed.blindrange.dev:7501", method: "POST",
+          path: "/mget", body_b64: btoa(inner) }));
+      const r = await fetch(gw + "/fwd", { method: "POST",
+        headers: { "Content-Type": "application/json",
+                   "X-BR-Auth": await sign(env) }, body: env });
+      const out = await r.json();
+      if (out.status !== 200) continue;
+      return JSON.parse(atob(out.body_b64)).values || {};
+    } catch { continue; }
+  }
+  throw new Error("no gateway reachable");
+}
+
+const hash = location.hash.slice(1);
+if (!/^[0-9a-f]{64}$/.test(hash)) {
+  S.innerHTML = "no app hash in the URL — expected <b>loader.html#&lt;sha256&gt;</b>";
+} else {
+  try {
+    // immutable ⇒ cache forever, verified once per device
+    const cached = localStorage.getItem("app:" + hash);
+    let html = cached;
+    if (!html) {
+      S.innerHTML = "fetching manifest <b>" + hash.slice(0, 12) + "…</b>";
+      const man = (await mget(["B:" + hash]))["B:" + hash];
+      if (!man) throw new Error("app not found on the network");
+      const { chunks } = JSON.parse(atob(man));
+      S.innerHTML = `fetching ${chunks.length} chunk(s) from blind storage…`;
+      const got = await mget(chunks.map((c) => "B:" + c));
+      const parts = [];
+      for (const c of chunks) {
+        const b64 = got["B:" + c];
+        if (!b64) throw new Error("chunk missing: " + c.slice(0, 12));
+        const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+        if (await hexhash(bytes) !== c)
+          throw new Error("chunk failed verification — refusing to run");
+        parts.push(bytes);
+      }
+      const whole = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+      let off = 0;
+      for (const p of parts) { whole.set(p, off); off += p.length; }
+      if (await hexhash(whole) !== hash)
+        throw new Error("application failed verification — refusing to run");
+      html = new TextDecoder().decode(whole);
+      try { localStorage.setItem("app:" + hash, html); } catch {}
+    }
+    document.open();
+    document.write(html);
+    document.close();
+  } catch (e) {
+    S.innerHTML = "refused: " + e.message;
+  }
+}
+</script>
+</body>
+</html>

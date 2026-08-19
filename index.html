@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<!-- =====================================================================
+     InvoiceFlow Solo — invoicing with no backend and no landlord.
+
+     This file is the entire application. The database lives on the
+     public blindrange network as ciphertext under pseudorandom keys;
+     the keys that read it live in THIS browser, sealed under your
+     passphrase. Nobody hosts your ledger. Nobody can read it. Nobody
+     can lock you out of it.
+
+     Third rebuild of the same product, one variable moved each time:
+       v1  React + FastAPI + MongoDB      (classic SaaS)
+       v2  React + FastAPI + blindrange   (blind storage, own server)
+       v3  this file                      (no server at all)
+
+     No build step, no framework, no third-party scripts — a page that
+     holds master keys must not run anyone else's code. blindrange.js
+     is vendored next to this file for the same reason.
+     ===================================================================== -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InvoiceFlow Solo</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#ffffff; --line:#e3e6ea; --txt:#1c2430;
+          --dim:#68727f; --acc:#2563eb; --ok:#15803d; --warn:#b45309;
+          --bad:#b91c1c; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--txt);
+         font:15px/1.55 -apple-system, "Segoe UI", Roboto, sans-serif; }
+  a { color:var(--acc); text-decoration:none; cursor:pointer; }
+  .shell { max-width:980px; margin:0 auto; padding:0 20px 60px; }
+  header { display:flex; align-items:center; gap:22px; padding:16px 0;
+           border-bottom:1px solid var(--line); margin-bottom:22px;
+           flex-wrap:wrap; }
+  header h1 { font-size:19px; letter-spacing:-.3px; }
+  header h1 b { color:var(--acc); font-weight:800; }
+  nav { display:flex; gap:14px; flex-wrap:wrap; }
+  nav a { color:var(--dim); font-size:14px; padding:4px 2px; }
+  nav a.on { color:var(--acc); border-bottom:2px solid var(--acc); }
+  .push { margin-left:auto; font-size:12.5px; color:var(--dim); }
+  h2 { font-size:20px; margin:4px 0 16px; letter-spacing:-.2px; }
+  .card { background:var(--card); border:1px solid var(--line);
+          border-radius:12px; padding:20px 22px; margin-bottom:16px; }
+  label { display:block; font-size:12px; color:var(--dim); margin:10px 0 4px;
+          text-transform:uppercase; letter-spacing:.05em; }
+  input, select, textarea { width:100%; font:inherit; color:var(--txt);
+          background:#fff; border:1px solid var(--line); border-radius:8px;
+          padding:8px 11px; }
+  input:focus, select:focus, textarea:focus { outline:2px solid #bfd3fa;
+          border-color:var(--acc); }
+  button { font:inherit; border-radius:8px; padding:9px 16px; cursor:pointer;
+           border:1px solid var(--acc); background:var(--acc); color:#fff; }
+  button.ghost { background:#fff; color:var(--acc); }
+  button.quiet { background:#fff; color:var(--dim); border-color:var(--line); }
+  button:disabled { opacity:.5; cursor:default; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; color:var(--dim); font-size:12px;
+       text-transform:uppercase; letter-spacing:.05em; font-weight:600;
+       padding:8px 10px; border-bottom:1px solid var(--line); }
+  td { padding:10px; border-bottom:1px solid var(--line); }
+  tr.click { cursor:pointer; } tr.click:hover td { background:#f3f6fc; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0 18px; }
+  .grid3 { display:grid; grid-template-columns:2fr 1fr 1fr; gap:0 18px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .right { text-align:right; }
+  .pill { font-size:11.5px; padding:3px 10px; border-radius:99px;
+          border:1px solid; font-weight:600; }
+  .pill.created { color:var(--dim); border-color:var(--line); }
+  .pill.sent { color:var(--warn); border-color:var(--warn); }
+  .pill.paid { color:var(--ok); border-color:var(--ok); }
+  .pill.cancelled { color:var(--bad); border-color:var(--bad);
+                    text-decoration:line-through; }
+  .stat { display:inline-block; margin-right:34px; }
+  .stat b { display:block; font-size:26px; letter-spacing:-.5px; }
+  .stat span { font-size:12px; color:var(--dim); text-transform:uppercase; }
+  .muted { color:var(--dim); font-size:13px; }
+  .spin { display:inline-block; width:14px; height:14px; border-radius:50%;
+          border:2px solid var(--line); border-top-color:var(--acc);
+          animation:sp 0.8s linear infinite; vertical-align:-2px; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+  #toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%);
+           background:#1c2430; color:#fff; padding:10px 18px; font-size:14px;
+           border-radius:9px; opacity:0; transition:opacity .25s;
+           pointer-events:none; max-width:90vw; }
+  #toast.show { opacity:1; }
+  .lines th, .lines td { padding:6px; }
+  .lines input { padding:6px 8px; }
+  textarea.invite { font:11px ui-monospace, Menlo, monospace; min-height:70px; }
+
+  /* --------- the printable invoice: this IS the PDF feature ---------- */
+  #print-root { display:none; }
+  @media print {
+    body * { visibility:hidden; }
+    #print-root, #print-root * { visibility:visible; }
+    #print-root { display:block; position:absolute; inset:0;
+                  background:#fff; color:#000; padding:14mm;
+                  font:12.5px/1.5 -apple-system, "Segoe UI", sans-serif; }
+    .p-head { display:flex; justify-content:space-between;
+              align-items:flex-start; margin-bottom:26px; }
+    .p-head img { max-height:58px; max-width:200px; }
+    .p-num { font-size:24px; font-weight:800; }
+    .p-cols { display:flex; justify-content:space-between; margin:18px 0; }
+    .p-cols h4 { font-size:11px; text-transform:uppercase; color:#555;
+                 margin-bottom:4px; }
+    #print-root table { width:100%; border-collapse:collapse; margin:14px 0; }
+    #print-root th { border-bottom:1.5px solid #000; color:#000;
+                     font-size:11px; padding:6px 4px; }
+    #print-root td { border-bottom:.5px solid #bbb; padding:7px 4px; }
+    .p-totals { margin-left:auto; width:260px; }
+    .p-totals td { border:none; padding:3px 4px; }
+    .p-grand { font-size:16px; font-weight:800; border-top:1.5px solid #000; }
+    .p-foot { margin-top:30px; font-size:11.5px; color:#444;
+              white-space:pre-wrap; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header id="chrome" style="display:none">
+    <h1>Invoice<b>Flow</b> <span class="muted">Solo</span></h1>
+    <nav id="nav">
+      <a href="#/dash">Dashboard</a>
+      <a href="#/invoices">Invoices</a>
+      <a href="#/new">New invoice</a>
+      <a href="#/customers">Customers</a>
+      <a href="#/items">Items</a>
+      <a href="#/settings">Settings</a>
+    </nav>
+    <span class="push" id="netinfo"></span>
+  </header>
+  <main id="view"></main>
+</div>
+<div id="toast"></div>
+<div id="print-root"></div>
+
+<script type="module">
+import { Owner, idbAdapter } from "./blindrange.js";
+
+/* ------------------------------------------------------------------ *
+ * One database, one schema, a `kind` discriminator — five entity
+ * types share one dyadic index. Only these four fields are ever
+ * range-indexed; everything else (addresses, line items, the logo,
+ * totals) travels sealed inside records the network cannot read.
+ *   kind: 1 profile · 2 customer · 3 item · 4 invoice · 5 condition
+ *   num:  invoice number (10001+)
+ *   day:  issue date, days since 2020-01-01 (leaf 8 = the network can
+ *         never resolve WHEN finer than an 8-day band)
+ *   name: customer/item name, first 6 chars prefix-searchable
+ * ------------------------------------------------------------------ */
+const SCHEMA = {
+  kind: { type: "int", bits: 3,  leaf_width: 1 },
+  num:  { type: "int", bits: 20, leaf_width: 16 },
+  day:  { type: "int", bits: 15, leaf_width: 8 },
+  name: { type: "str", bits: 30, leaf_width: 16, chars: 6 },
+};
+const K = { profile: 1, customer: 2, item: 3, invoice: 4, condition: 5 };
+const NET = {
+  bootstrap: ["seed.blindrange.dev:7501"],
+  networkSecret: "blindrange-public",       // public DEMO network — run
+  gateway: ["https://blindrange.dev/api"],  // your own nodes for real books
+};
+const EPOCH_DAY = Date.UTC(2020, 0, 1);
+const toDay = (iso) => Math.max(0, Math.round(
+  (Date.parse(iso + "T00:00:00Z") - EPOCH_DAY) / 86400000));
+const NUM_MAX = 2 ** 20 - 1, DAY_MAX = 2 ** 15 - 1;
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
+            "'": "&#39;" }[c]));
+const money = (n, cur) => new Intl.NumberFormat(undefined,
+  { style: "currency", currency: cur || "USD" }).format(n || 0);
+let toastT;
+function toast(msg) {
+  $("#toast").textContent = msg;
+  $("#toast").classList.add("show");
+  clearTimeout(toastT);
+  toastT = setTimeout(() => $("#toast").classList.remove("show"), 3200);
+}
+
+let db = null;
+let profile = null;          // the kind=1 singleton, cached
+
+/* ------------------------------- data -------------------------------- */
+const listKind = (k) => db.query("kind", k, k);
+async function loadProfile() {
+  const rows = await listKind(K.profile);
+  profile = rows.sort((a, b) => (b.saved_at || 0) - (a.saved_at || 0))[0]
+    || null;
+  return profile;
+}
+// records are immutable ciphertext: an update is delete + reinsert.
+// A crash between the two leaves a visible duplicate, never a hole —
+// loadProfile picks the newest and duplicates are harmless.
+async function replace(rec, rid) {
+  await db.insert(rec);
+  if (rid) await db.delete(rid);
+}
+
+/* ------------------------------ unlock ------------------------------- */
+function unlockView(msg = "") {
+  $("#chrome").style.display = "none";
+  $("#view").innerHTML = `
+  <div class="card" style="max-width:460px;margin:60px auto">
+    <h2>Your books, your keys</h2>
+    <p class="muted">The passphrase unlocks this browser's copy of the
+    master key. First time here? The same passphrase creates a new
+    ledger. Joining from another device? Paste its invite below.</p>
+    <label>Passphrase</label>
+    <input id="pass" type="password" autocomplete="current-password">
+    <label>Invite (only when joining an existing ledger)</label>
+    <textarea id="inv" class="invite"
+      placeholder="leave empty to create or reopen this device's ledger"></textarea>
+    <p style="margin-top:14px"><button id="go">Unlock</button>
+    <span class="muted" id="umsg">${esc(msg)}</span></p>
+  </div>`;
+  $("#go").onclick = async () => {
+    const pass = $("#pass").value;
+    if (!pass) return toast("a passphrase is required");
+    $("#go").disabled = true;
+    $("#umsg").innerHTML = '<span class="spin"></span> talking to the network…';
+    const adapter = idbAdapter("invoiceflow-solo");
+    try {
+      const inv = $("#inv").value.trim();
+      try {
+        db = await Owner.open(adapter, pass, { gateway: NET.gateway });
+      } catch (e) {
+        if (!String(e).includes("no state stored")) throw e;
+        db = inv
+          ? await Owner.accept(adapter, pass, inv, { gateway: NET.gateway })
+          : await Owner.create(adapter, pass, SCHEMA, NET.bootstrap,
+              { networkSecret: NET.networkSecret, gateway: NET.gateway });
+      }
+      await db.enableMirror("invoiceflow-solo-mirror");
+      await loadProfile();
+      $("#chrome").style.display = "flex";
+      $("#netinfo").textContent =
+        `${db.network().length} nodes · ${db._st.writers.length} writer(s)`;
+      location.hash = profile ? "#/dash" : "#/settings";
+      route();
+      if (!profile) toast("welcome — set up your company first");
+    } catch (e) {
+      $("#umsg").textContent = e.message;
+      $("#go").disabled = false;
+    }
+  };
+}
+
+/* ----------------------------- dashboard ----------------------------- */
+async function dashView() {
+  const inv = await listKind(K.invoice);
+  const open = inv.filter((i) => i.status === "sent");
+  const paid = inv.filter((i) => i.status === "paid");
+  const cur = profile?.default_currency || "USD";
+  const sum = (a) => a.reduce((s, i) => s + (i.total || 0), 0);
+  $("#view").innerHTML = `
+  <h2>Dashboard</h2>
+  <div class="card">
+    <span class="stat"><b>${inv.length}</b><span>invoices</span></span>
+    <span class="stat"><b>${money(sum(open), cur)}</b><span>outstanding</span></span>
+    <span class="stat"><b>${money(sum(paid), cur)}</b><span>collected</span></span>
+  </div>
+  <div class="card"><p class="muted">Everything on this page was
+  decrypted in this tab. The ${db.network().length} nodes storing it can
+  count your records, never read them — and this page has no server to
+  go down.</p></div>`;
+}
+
+/* ----------------------------- invoices ------------------------------ */
+async function invoicesView() {
+  const rows = (await listKind(K.invoice))
+    .sort((a, b) => b.num - a.num);
+  $("#view").innerHTML = `
+  <h2>Invoices</h2>
+  <div class="card"><table>
+    <tr><th>#</th><th>Customer</th><th>Issued</th><th class="right">Total</th>
+        <th>Status</th></tr>
+    ${rows.map((r) => `
+    <tr class="click" data-rid="${r._rid}">
+      <td>${r.num}</td><td>${esc(r.customer_name)}</td>
+      <td>${esc(r.issue_date)}</td>
+      <td class="right">${money(r.total, r.currency)}</td>
+      <td><span class="pill ${r.status}">${r.status}</span></td>
+    </tr>`).join("") ||
+    '<tr><td colspan="5" class="muted">No invoices yet.</td></tr>'}
+  </table></div>`;
+  for (const tr of document.querySelectorAll("tr.click"))
+    tr.onclick = () => { location.hash = "#/invoice/" + tr.dataset.rid; };
+}
+
+async function invoiceDetail(rid) {
+  const all = await listKind(K.invoice);
+  const r = all.find((x) => x._rid === rid);
+  if (!r) { location.hash = "#/invoices"; return; }
+  const flow = { created: "sent", sent: "paid" };
+  $("#view").innerHTML = `
+  <h2>Invoice #${r.num}
+    <span class="pill ${r.status}">${r.status}</span></h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:14px">
+      <button id="pdf">Print / save PDF</button>
+      ${flow[r.status] ? `<button class="ghost" id="advance">Mark ${flow[r.status]}</button>` : ""}
+      ${r.status !== "cancelled" && r.status !== "paid"
+        ? '<button class="quiet" id="cancel">Cancel</button>' : ""}
+    </div>
+    <div class="grid2">
+      <div><label>Billed to</label>
+        <p>${esc(r.customer_name)}<br><span class="muted">
+        ${esc([r.customer_address, r.customer_city, r.customer_country]
+          .filter(Boolean).join(", "))}</span></p></div>
+      <div><label>Dates</label>
+        <p>Issued ${esc(r.issue_date)}<br>Due ${esc(r.due_date)}</p></div>
+    </div>
+    <table style="margin-top:12px">
+      <tr><th>Description</th><th class="right">Qty</th>
+          <th class="right">Unit</th><th class="right">Amount</th></tr>
+      ${r.line_items.map((li) => `<tr><td>${esc(li.description)}</td>
+        <td class="right">${li.quantity}</td>
+        <td class="right">${money(li.unit_price, r.currency)}</td>
+        <td class="right">${money(li.quantity * li.unit_price, r.currency)}</td></tr>`).join("")}
+    </table>
+    <p class="right" style="margin-top:10px">
+      Subtotal ${money(r.subtotal, r.currency)}
+      &nbsp;·&nbsp; Tax (${r.tax_rate}%) ${money(r.tax_amount, r.currency)}
+      &nbsp;·&nbsp; <b>Total ${money(r.total, r.currency)}</b></p>
+  </div>`;
+  $("#pdf").onclick = () => { renderPrint(r); window.print(); };
+  const setStatus = async (status) => {
+    await replace({ ...strip(r), status }, r._rid);
+    toast(`invoice #${r.num} ${status}`);
+    location.hash = "#/invoices";
+  };
+  if ($("#advance")) $("#advance").onclick = () => setStatus(flow[r.status]);
+  if ($("#cancel")) $("#cancel").onclick = () => setStatus("cancelled");
+}
+const strip = (r) => { const { _rid, ...rec } = r; return rec; };
+
+function renderPrint(r) {
+  const p = profile || {};
+  $("#print-root").innerHTML = `
+  <div class="p-head">
+    <div>${p.logo_base64 ? `<img src="${p.logo_base64}">` : ""}
+      <div style="font-weight:800;font-size:16px">${esc(p.name || "")}</div>
+      <div style="font-size:11px;color:#444">${esc([p.address, p.city,
+        p.postal_code, p.country].filter(Boolean).join(", "))}<br>
+        ${esc(p.tax_id ? "Tax ID: " + p.tax_id : "")}</div></div>
+    <div class="right"><div class="p-num">INVOICE #${r.num}</div>
+      <div>Issued ${esc(r.issue_date)}</div><div>Due ${esc(r.due_date)}</div></div>
+  </div>
+  <div class="p-cols"><div><h4>Bill to</h4>${esc(r.customer_name)}<br>
+    ${esc([r.customer_address, r.customer_city, r.customer_postal_code,
+           r.customer_country].filter(Boolean).join(", "))}<br>
+    ${esc(r.customer_tax_id ? "Tax ID: " + r.customer_tax_id : "")}</div></div>
+  <table><tr><th>Description</th><th class="right">Qty</th>
+    <th class="right">Unit price</th><th class="right">Amount</th></tr>
+  ${r.line_items.map((li) => `<tr><td>${esc(li.description)}</td>
+    <td class="right">${li.quantity} ${esc(li.unit || "")}</td>
+    <td class="right">${money(li.unit_price, r.currency)}</td>
+    <td class="right">${money(li.quantity * li.unit_price, r.currency)}</td></tr>`).join("")}
+  </table>
+  <table class="p-totals">
+    <tr><td>Subtotal</td><td class="right">${money(r.subtotal, r.currency)}</td></tr>
+    <tr><td>Tax (${r.tax_rate}%)</td><td class="right">${money(r.tax_amount, r.currency)}</td></tr>
+    <tr class="p-grand"><td>Total</td><td class="right">${money(r.total, r.currency)}</td></tr>
+  </table>
+  <div class="p-foot">${esc(r.payment_conditions ? "Payment: " +
+    r.payment_conditions + "\\n" : "")}${esc(r.footer_notes || "")}</div>`;
+}
+
+/* ---------------------------- new invoice ---------------------------- */
+async function newInvoiceView() {
+  const [customers, items, conds] = await Promise.all(
+    [listKind(K.customer), listKind(K.item), listKind(K.condition)]);
+  const today = new Date().toISOString().slice(0, 10);
+  const cur = profile?.default_currency || "USD";
+  const condTexts = [...new Set([
+    ...conds.sort((a, b) => (b.uses || 0) - (a.uses || 0)).map((c) => c.text),
+    "Due on receipt", "Net 7", "Net 15", "Net 30"])];
+  $("#view").innerHTML = `
+  <h2>New invoice</h2>
+  <div class="card">
+    <div class="grid2">
+      <div><label>Customer</label>
+        <input id="cname" list="cust" placeholder="type or pick">
+        <datalist id="cust">${customers.map((c) =>
+          `<option value="${esc(c.name)}">`).join("")}</datalist></div>
+      <div><label>Currency</label><input id="cur" value="${esc(cur)}"></div>
+      <div><label>Issue date</label><input id="idate" type="date" value="${today}"></div>
+      <div><label>Payment terms</label>
+        <input id="cond" list="condl" placeholder="Net 30…">
+        <datalist id="condl">${condTexts.map((t) =>
+          `<option value="${esc(t)}">`).join("")}</datalist></div>
+    </div>
+    <label>Line items</label>
+    <table class="lines" id="lines">
+      <tr><th style="width:45%">Description</th><th>Qty</th><th>Unit price</th>
+          <th class="right">Amount</th><th></th></tr>
+    </table>
+    <datalist id="iteml">${items.map((i) =>
+      `<option value="${esc(i.name)}">`).join("")}</datalist>
+    <p style="margin-top:8px"><button class="ghost" id="addline">+ line</button></p>
+    <div class="grid2">
+      <div><label>Tax rate %</label><input id="tax" type="number" value="0"></div>
+      <div><label>Footer notes</label><input id="notes"></div>
+    </div>
+    <p style="margin-top:16px" class="row">
+      <button id="save">Create invoice</button>
+      <span class="muted" id="nmsg"></span></p>
+  </div>`;
+  const itemByName = Object.fromEntries(items.map((i) => [i.name, i]));
+  function addLine() {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><input class="d" list="iteml"></td>
+      <td><input class="q" type="number" value="1" style="width:70px"></td>
+      <td><input class="p" type="number" value="0" style="width:110px"></td>
+      <td class="right amt">–</td>
+      <td><a class="del">✕</a></td>`;
+    $("#lines").appendChild(tr);
+    const recalc = () => {
+      const q = +tr.querySelector(".q").value || 0;
+      const p = +tr.querySelector(".p").value || 0;
+      tr.querySelector(".amt").textContent = money(q * p, $("#cur").value);
+    };
+    tr.querySelector(".d").onchange = () => {
+      const it = itemByName[tr.querySelector(".d").value];
+      if (it) { tr.querySelector(".p").value = it.default_price; recalc(); }
+    };
+    tr.oninput = recalc;
+    tr.querySelector(".del").onclick = () => tr.remove();
+  }
+  addLine();
+  $("#addline").onclick = addLine;
+
+  $("#save").onclick = async () => {
+    const lines = [...document.querySelectorAll("#lines tr")].slice(1)
+      .map((tr) => ({
+        description: tr.querySelector(".d").value.trim(),
+        quantity: +tr.querySelector(".q").value || 0,
+        unit_price: +tr.querySelector(".p").value || 0, unit: "pcs" }))
+      .filter((l) => l.description);
+    const cname = $("#cname").value.trim();
+    if (!cname || !lines.length)
+      return toast("a customer and at least one line are required");
+    $("#save").disabled = true;
+    $("#nmsg").innerHTML =
+      '<span class="spin"></span> claiming a number on the network…';
+    try {
+      // Network-arbitrated: unique even if your other laptop invoices
+      // at the same second. Numbers start at 10001 like the original;
+      // gaps happen only on a crash after a claim — explainable, which
+      // is what auditors actually require of invoice numbering.
+      const num = 10000 + await db.nextValue("invoice");
+      const cust = customers.find((c) => c.name === cname) || {};
+      const subtotal = lines.reduce((s, l) => s + l.quantity * l.unit_price, 0);
+      const taxRate = +$("#tax").value || 0;
+      const condText = $("#cond").value.trim();
+      const netM = /net\s*(\d+)/i.exec(condText);
+      const dueDays = netM ? +netM[1] : 0;
+      const issue = $("#idate").value || today;
+      const due = new Date(Date.parse(issue) + dueDays * 86400000)
+        .toISOString().slice(0, 10);
+      await db.insert({
+        kind: K.invoice, num: Math.min(num, NUM_MAX),
+        day: Math.min(toDay(issue), DAY_MAX),
+        name: cname.slice(0, 6).toLowerCase(),
+        customer_name: cname, customer_address: cust.address || "",
+        customer_city: cust.city || "",
+        customer_postal_code: cust.postal_code || "",
+        customer_country: cust.country || "",
+        customer_tax_id: cust.tax_id || "",
+        line_items: lines, subtotal, tax_rate: taxRate,
+        tax_amount: subtotal * taxRate / 100,
+        total: subtotal * (1 + taxRate / 100),
+        currency: $("#cur").value || "USD",
+        issue_date: issue, due_date: due,
+        payment_conditions: condText, footer_notes: $("#notes").value,
+        status: "created", created_at: Date.now() });
+      if (condText && !conds.find((c) => c.text === condText))
+        await db.insert({ kind: K.condition, text: condText, uses: 1 });
+      if (!customers.find((c) => c.name === cname))
+        await db.insert({ kind: K.customer, name: cname.slice(0, 6).toLowerCase(),
+          display_name: cname, address: "", city: "", country: "" });
+      toast(`invoice #${num} created`);
+      location.hash = "#/invoices";
+    } catch (e) {
+      toast(e.message);
+      $("#save").disabled = false;
+      $("#nmsg").textContent = "";
+    }
+  };
+}
+
+/* ------------------------- customers & items ------------------------- */
+function crudView(kindNo, title, fields) {
+  return async () => {
+    const rows = await listKind(kindNo);
+    $("#view").innerHTML = `
+    <h2>${title}</h2>
+    <div class="card"><div class="grid3">
+      ${fields.map((f) => `<div><label>${f.label}</label>
+        <input id="f-${f.key}" ${f.type ? `type="${f.type}"` : ""}></div>`).join("")}
+    </div><p style="margin-top:12px"><button id="add">Add</button></p></div>
+    <div class="card"><table>
+      <tr>${fields.map((f) => `<th>${f.label}</th>`).join("")}<th></th></tr>
+      ${rows.map((r) => `<tr>
+        ${fields.map((f) => `<td>${esc(r[f.show || f.key])}</td>`).join("")}
+        <td class="right"><a class="del" data-rid="${r._rid}">delete</a></td>
+      </tr>`).join("") ||
+      `<tr><td colspan="${fields.length + 1}" class="muted">None yet.</td></tr>`}
+    </table></div>`;
+    $("#add").onclick = async () => {
+      const rec = { kind: kindNo };
+      for (const f of fields) {
+        const v = $(`#f-${f.key}`).value;
+        rec[f.show || f.key] = f.type === "number" ? +v || 0 : v;
+      }
+      const nm = rec.display_name || rec.name || "";
+      if (!nm) return toast("a name is required");
+      rec.name = nm.slice(0, 6).toLowerCase();     // the indexed prefix
+      await db.insert(rec);
+      route();
+    };
+    for (const a of document.querySelectorAll("a.del"))
+      a.onclick = async () => { await db.delete(a.dataset.rid); route(); };
+  };
+}
+const customersView = crudView(K.customer, "Customers", [
+  { key: "name", label: "Name", show: "display_name" },
+  { key: "city", label: "City", show: "city" },
+  { key: "country", label: "Country", show: "country" }]);
+const itemsView = crudView(K.item, "Items", [
+  { key: "name", label: "Name", show: "display_name" },
+  { key: "price", label: "Default price", show: "default_price",
+    type: "number" },
+  { key: "unit", label: "Unit", show: "unit" }]);
+
+/* ------------------------------ settings ----------------------------- */
+async function settingsView() {
+  const p = profile || {};
+  const F = [["name", "Company name"], ["address", "Address"],
+    ["city", "City"], ["postal_code", "Postal code"],
+    ["country", "Country"], ["tax_id", "Tax ID"], ["email", "Email"],
+    ["default_currency", "Currency (USD, EUR…)"]];
+  $("#view").innerHTML = `
+  <h2>Settings</h2>
+  <div class="card"><div class="grid2">
+    ${F.map(([k, l]) => `<div><label>${l}</label>
+      <input id="s-${k}" value="${esc(p[k] || "")}"></div>`).join("")}
+    <div><label>Logo (small image)</label><input id="s-logo" type="file"
+      accept="image/*"></div>
+  </div>
+  <p style="margin-top:14px"><button id="save">Save profile</button></p></div>
+  <div class="card">
+    <h2 style="font-size:16px">Devices &amp; access</h2>
+    <p class="muted">An invite carries the master key: whoever holds it
+    reads and writes this ledger. Send it like a house key — to your
+    other laptop, your accountant, or a Python script
+    (<code>Owner.accept</code> takes the same string).</p>
+    <p class="row" style="margin-top:8px">
+      <button class="ghost" id="mkinv">Show invite</button></p>
+    <textarea id="invout" class="invite" readonly
+      style="display:none;margin-top:8px"></textarea>
+  </div>`;
+  $("#mkinv").onclick = () => {
+    $("#invout").style.display = "block";
+    $("#invout").value = db.invite();
+    $("#invout").select();
+  };
+  $("#save").onclick = async () => {
+    const rec = { kind: K.profile, name: "co", saved_at: Date.now() };
+    for (const [k] of F) rec[k] = $(`#s-${k}`).value;
+    const file = $("#s-logo").files[0];
+    if (file) {
+      if (file.size > 300_000) return toast("logo too large (300KB max)");
+      rec.logo_base64 = await new Promise((res) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.readAsDataURL(file);
+      });
+    } else rec.logo_base64 = p.logo_base64 || null;
+    await replace(rec, p._rid);
+    await loadProfile();
+    toast("profile saved");
+  };
+}
+
+/* ------------------------------ router ------------------------------- */
+const routes = { dash: dashView, invoices: invoicesView, new: newInvoiceView,
+  customers: customersView, items: itemsView, settings: settingsView };
+async function route() {
+  if (!db) return unlockView();
+  const [, page, arg] = location.hash.split("/");
+  for (const a of document.querySelectorAll("#nav a"))
+    a.classList.toggle("on", a.hash === `#/${page}`);
+  try {
+    if (page === "invoice" && arg) await invoiceDetail(arg);
+    else await (routes[page] || dashView)();
+  } catch (e) {
+    $("#view").innerHTML = `<div class="card"><p><b>Refused:</b>
+      ${esc(e.message)}</p><p class="muted">The engine refuses rather
+      than answering wrong — usually a degraded network moment.
+      <a onclick="location.reload()">Retry</a></p></div>`;
+  }
+}
+window.onhashchange = route;
+unlockView();
+</script>
+</body>
+</html>
