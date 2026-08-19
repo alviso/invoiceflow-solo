@@ -367,6 +367,12 @@ function unlockView(msg = "") {
           } else throw e;
         }
       }
+      // Books deserve all three copies BEFORE the save returns. The
+      // default (2 acks, third hedged) once left a demo ledger's every
+      // record parked on relay tenants only; a fleet restart made the
+      // whole ledger unreadable for minutes. Slower writes, stronger
+      // custody — the right trade for a ledger.
+      db.writeAcks = 3;
       const mir = await db.enableMirror(sessionOnly ? null
         : "invoiceflow-solo-mirror");
       if (!mir.completeOnce) {
