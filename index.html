@@ -197,6 +197,7 @@ function toast(msg) {
 
 let db = null;
 let profile = null;          // the kind=1 singleton, cached
+let draftFrom = null;        // invoice being duplicated into the form
 
 /* ------------------------------- data -------------------------------- */
 const listKind = (k) => db.query("kind", k, k);
@@ -331,6 +332,7 @@ async function invoiceDetail(rid) {
         ? '<button class="quiet" id="cancel">Cancel</button>' : ""}
       ${r.status === "cancelled"
         ? '<button class="quiet" id="delinv">Delete permanently</button>' : ""}
+      <button class="ghost" id="dup">Duplicate</button>
     </div>
     <div class="grid2">
       <div><label>Billed to</label>
@@ -354,6 +356,7 @@ async function invoiceDetail(rid) {
       &nbsp;·&nbsp; <b>Total ${money(r.total, r.currency)}</b></p>
   </div>`;
   $("#pdf").onclick = () => { renderPrint(r); window.print(); };
+  $("#dup").onclick = () => { draftFrom = r; go("new"); };
   const setStatus = (status) => guard(async () => {
     await replace({ ...strip(r), status }, r);
     toast(`invoice #${r.num} ${status}`);
@@ -444,13 +447,15 @@ async function newInvoiceView() {
   </div>`;
   const itemByName = Object.fromEntries(
     items.map((i) => [i.display_name || i.name, i]));
+  const startDraft = draftFrom;
+  draftFrom = null;
   const custByName = Object.fromEntries(
     customers.map((c) => [c.display_name || c.name, c]));
   $("#cname").onchange = () => {
     const c = custByName[$("#cname").value.trim()];
     if (c && c.payment_terms) $("#cond").value = c.payment_terms;
   };
-  function addLine() {
+  function addLine(pre) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td><input class="d" list="iteml"></td>
       <td><input class="q" type="number" value="1" style="width:70px"></td>
@@ -473,9 +478,30 @@ async function newInvoiceView() {
     };
     tr.oninput = recalc;
     tr.querySelector(".del").onclick = () => tr.remove();
+    if (pre && pre.description !== undefined) {
+      tr.querySelector(".d").value = pre.description;
+      tr.querySelector(".q").value = pre.quantity;
+      tr.querySelector(".p").value = pre.unit_price;
+      tr.dataset.unit = pre.unit || "pcs";
+      recalc();
+    }
   }
   addLine();
-  $("#addline").onclick = addLine;
+  $("#addline").onclick = () => addLine();
+  if (startDraft) {
+    // Duplicate: everything carries over except identity — the number
+    // is claimed fresh from the network at save, dates reset to today.
+    $("#cname").value = startDraft.customer_name || "";
+    $("#cur").value = startDraft.currency || cur;
+    $("#tax").value = startDraft.tax_rate || 0;
+    $("#cond").value = startDraft.payment_conditions || "";
+    $("#notes").value = startDraft.footer_notes || "";
+    document.querySelectorAll("#lines tr").forEach((tr, i) => {
+      if (i) tr.remove();
+    });
+    for (const li of startDraft.line_items || []) addLine(li);
+    toast(`copied from invoice #${startDraft.num} — new number on save`);
+  }
 
   $("#save").onclick = async () => {
     const lines = [...document.querySelectorAll("#lines tr")].slice(1)
