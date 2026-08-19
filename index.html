@@ -233,7 +233,18 @@ function unlockView(msg = "") {
           : await Owner.create(adapter, pass, SCHEMA, NET.bootstrap,
               { networkSecret: NET.networkSecret, gateway: NET.gateway });
       }
-      await db.enableMirror("invoiceflow-solo-mirror");
+      const mir = await db.enableMirror("invoiceflow-solo-mirror");
+      if (!mir.completeOnce) {
+        // One background pass makes the mirror complete; from then on
+        // every page renders from IndexedDB — hits AND absence — and
+        // the network is only touched by writes.
+        db.sync().then((secs) => {
+          toast(`first sync done (${Math.round(secs)}s) — reads are now local`);
+          go();
+        }).catch((e) => console.error("first sync failed:", e));
+      } else if (db._st.writers.length > 1) {
+        db.sync().catch(() => {});      // refresh the multi-writer window
+      }
       await loadProfile();
       $("#chrome").style.display = "flex";
       $("#netinfo").textContent =
@@ -367,7 +378,7 @@ function renderPrint(r) {
     <tr class="p-grand"><td>Total</td><td class="right">${money(r.total, r.currency)}</td></tr>
   </table>
   <div class="p-foot">${esc(r.payment_conditions ? "Payment: " +
-    r.payment_conditions + "\\n" : "")}${esc(r.footer_notes || "")}</div>`;
+    r.payment_conditions + "\n" : "")}${esc(r.footer_notes || "")}</div>`;
 }
 
 /* ---------------------------- new invoice ---------------------------- */
@@ -707,6 +718,8 @@ async function go(page, arg) {
   if (!db) return unlockView();
   for (const a of document.querySelectorAll("#nav a"))
     a.classList.toggle("on", a.dataset.page === cur.page);
+  $("#view").innerHTML =
+    '<p class="muted"><span class="spin"></span> loading\u2026</p>';
   try {
     if (cur.page === "invoice" && cur.arg) await invoiceDetail(cur.arg);
     else await (routes[cur.page] || dashView)();
