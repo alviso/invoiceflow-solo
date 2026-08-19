@@ -41,6 +41,9 @@ hosting.
 node publish.mjs index.html     # prints loader.html#<hash>
 ```
 
+This build is live from the network:
+[`loader.html#ac0cd27d…`](https://alviso.github.io/invoiceflow-solo/loader.html#ac0cd27d06c137079679beeff94171709209243545e0c8049e8cf747532acf9e)
+
 ## Honesty section
 
 Talks to the **public demo network**: published membership secret, no

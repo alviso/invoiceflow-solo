@@ -13,7 +13,8 @@
      old link keeps loading exactly the bytes it always did, forever,
      from cache after the first visit.
 
-     These ~80 lines are the whole trust root. Read them.
+     Trust root = this file + the blindrange.js it imports for ring
+     placement. Both are small and boring on purpose; read them.
      ===================================================================== -->
 <head>
 <meta charset="utf-8">
@@ -29,39 +30,54 @@
 <body>
 <div id="s">resolving application…</div>
 <script type="module">
-const GATEWAYS = ["https://blindrange.dev/api"];
+import { Ring, failureGroup }
+  from "https://blindrange.dev/blindrange.js?v=2";
+
+const GATEWAY = "https://blindrange.dev/api";
+const SEED = "seed.blindrange.dev:7501";
 const SECRET = "blindrange-public";
 const S = document.getElementById("s");
+const te = new TextEncoder();
+const hex = (b) => [...new Uint8Array(b)]
+  .map((x) => x.toString(16).padStart(2, "0")).join("");
 const hexhash = async (buf) =>
-  [...new Uint8Array(await crypto.subtle.digest("SHA-256", buf))]
-    .map((b) => b.toString(16).padStart(2, "0")).join("");
+  hex(await crypto.subtle.digest("SHA-256", buf));
 const sign = async (body) => {
-  const k = await crypto.subtle.importKey("raw",
-    new TextEncoder().encode(SECRET),
+  const k = await crypto.subtle.importKey("raw", te.encode(SECRET),
     { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return [...new Uint8Array(await crypto.subtle.sign("HMAC", k, body))]
-    .map((b) => b.toString(16).padStart(2, "0")).join("");
+  return hex(await crypto.subtle.sign("HMAC", k, body));
 };
+async function fwd(addr, method, path, payload) {
+  const env = te.encode(JSON.stringify({ addr, method, path,
+    body_b64: payload ? btoa(JSON.stringify(payload)) : "" }));
+  const r = await fetch(GATEWAY + "/fwd", { method: "POST",
+    headers: { "Content-Type": "application/json",
+               "X-BR-Auth": await sign(env) }, body: env });
+  const out = await r.json();
+  if (out.status >= 400) throw new Error(`${addr} -> ${out.status}`);
+  return JSON.parse(atob(out.body_b64 || ""));
+}
 
-async function mget(keys) {
-  // through the gateway: POST /fwd {addr: seed, path: /mget}
-  for (const gw of GATEWAYS) {
+let ring = null, addrOf = {};
+async function buildRing() {
+  const peers = (await fwd(SEED, "GET", "/peers", null)).peers;
+  const groups = {};
+  for (const [nid, e] of Object.entries(peers))
+    if ((e.age ?? 1e9) <= 40 && e.addr && !e.addr.startsWith("via:")) {
+      addrOf[nid] = e.addr;
+      groups[nid] = failureGroup(e.addr, e.udp || "");
+    }
+  ring = await Ring.build(Object.keys(addrOf).sort(), { groups });
+}
+async function blobGet(key) {
+  for (const nid of await ring.route(key, Math.min(6, ring.addrs.length))) {
     try {
-      const inner = JSON.stringify({ keys,
-        nonce: [...crypto.getRandomValues(new Uint8Array(16))]
-          .map((b) => b.toString(16).padStart(2, "0")).join("") });
-      const env = new TextEncoder().encode(JSON.stringify(
-        { addr: "seed.blindrange.dev:7501", method: "POST",
-          path: "/mget", body_b64: btoa(inner) }));
-      const r = await fetch(gw + "/fwd", { method: "POST",
-        headers: { "Content-Type": "application/json",
-                   "X-BR-Auth": await sign(env) }, body: env });
-      const out = await r.json();
-      if (out.status !== 200) continue;
-      return JSON.parse(atob(out.body_b64)).values || {};
+      const r = await fwd(addrOf[nid], "POST", "/mget", { keys: [key],
+        nonce: hex(crypto.getRandomValues(new Uint8Array(16))) });
+      if (r.values && r.values[key]) return r.values[key];
     } catch { continue; }
   }
-  throw new Error("no gateway reachable");
+  return null;
 }
 
 const hash = location.hash.slice(1);
@@ -70,21 +86,21 @@ if (!/^[0-9a-f]{64}$/.test(hash)) {
 } else {
   try {
     // immutable ⇒ cache forever, verified once per device
-    const cached = localStorage.getItem("app:" + hash);
-    let html = cached;
+    let html = localStorage.getItem("app:" + hash);
     if (!html) {
+      S.innerHTML = "reading the network roster…";
+      await buildRing();
       S.innerHTML = "fetching manifest <b>" + hash.slice(0, 12) + "…</b>";
-      const man = (await mget(["B:" + hash]))["B:" + hash];
+      const man = await blobGet("B:" + hash);
       if (!man) throw new Error("app not found on the network");
       const { chunks } = JSON.parse(atob(man));
-      S.innerHTML = `fetching ${chunks.length} chunk(s) from blind storage…`;
-      const got = await mget(chunks.map((c) => "B:" + c));
       const parts = [];
-      for (const c of chunks) {
-        const b64 = got["B:" + c];
-        if (!b64) throw new Error("chunk missing: " + c.slice(0, 12));
-        const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
-        if (await hexhash(bytes) !== c)
+      for (let i = 0; i < chunks.length; i++) {
+        S.innerHTML = `chunk ${i + 1}/${chunks.length} from blind storage…`;
+        const b64c = await blobGet("B:" + chunks[i]);
+        if (!b64c) throw new Error("chunk missing: " + chunks[i].slice(0, 12));
+        const bytes = Uint8Array.from(atob(b64c), (ch) => ch.charCodeAt(0));
+        if (await hexhash(bytes) !== chunks[i])
           throw new Error("chunk failed verification — refusing to run");
         parts.push(bytes);
       }
