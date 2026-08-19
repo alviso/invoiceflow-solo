@@ -515,14 +515,16 @@ async function newInvoiceView() {
     if (!cname || !lines.length)
       return toast("a customer and at least one line are required");
     $("#save").disabled = true;
-    $("#nmsg").innerHTML =
-      '<span class="spin"></span> claiming a number on the network…';
+    $("#nmsg").innerHTML = editing
+      ? '<span class="spin"></span> saving…'
+      : '<span class="spin"></span> claiming a number on the network…';
     try {
       // Network-arbitrated: unique even if your other laptop invoices
       // at the same second. Numbers start at 10001 like the original;
       // gaps happen only on a crash after a claim — explainable, which
       // is what auditors actually require of invoice numbering.
-      const num = 10000 + await db.nextValue("invoice");
+      const num = editing ? editing.num
+        : 10000 + await db.nextValue("invoice");
       const cust = customers.find(
         (c) => (c.display_name || c.name) === cname) || {};
       const subtotal = lines.reduce((s, l) => s + l.quantity * l.unit_price, 0);
@@ -548,7 +550,10 @@ async function newInvoiceView() {
         currency: $("#cur").value || "USD",
         issue_date: issue, due_date: due,
         payment_conditions: condText, footer_notes: $("#notes").value,
-        status: "created", created_at: Date.now() }, null);
+        status: editing ? editing.status : "created",
+        created_at: editing ? editing.created_at : Date.now() },
+        editing || null);
+      localStorage.removeItem("ifs-draft");
       if (condText && !conds.find((c) => c.text === condText))
         await replace({ kind: K.condition, text: condText, uses: 1 }, null);
       if (!customers.find((c) => (c.display_name || c.name) === cname))
@@ -556,7 +561,8 @@ async function newInvoiceView() {
           name: cname.slice(0, 6).toLowerCase(), display_name: cname,
           email: "", phone: "", address: "", city: "", postal_code: "",
           country: "", tax_id: "" }, null);
-      toast(`invoice #${num} created`);
+      toast(editing ? `invoice #${num} updated`
+        : `invoice #${num} created`);
       go("invoices");
     } catch (e) {
       toast(e.message);
