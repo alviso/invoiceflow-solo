@@ -187,6 +187,14 @@ const guard = (fn) => async (ev) => {
   finally { mlock = false; if (b) b.disabled = false; }
 };
 
+function download(name, text, type) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type }));
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 let toastT;
 function toast(msg) {
   $("#toast").textContent = msg;
@@ -780,6 +788,22 @@ async function settingsView() {
     </table>
   </div>
   <div class="card">
+    <h2 style="font-size:16px">Backup &amp; export</h2>
+    <p class="muted">The <b>recovery kit</b> is the master key as a file:
+    with it, any browser (or Python) rejoins this ledger and pulls the
+    books back from the network — the answer to "my laptop died". The
+    <b>JSON export</b> is a plaintext copy of every record for your
+    accountant or archive; it is unencrypted, so store it like the
+    private document it is.</p>
+    <p class="row" style="margin-top:8px">
+      <button class="ghost" id="reckit">Download recovery kit</button>
+      <button class="ghost" id="expjson">Export books (JSON)</button>
+      <label class="row" style="gap:6px"><input type="file" id="impfile"
+        accept="application/json" style="max-width:230px">
+        <button class="quiet" id="impjson">Import JSON</button></label>
+    </p>
+  </div>
+  <div class="card">
     <h2 style="font-size:16px">Devices &amp; access</h2>
     <p class="muted">An invite carries the master key: whoever holds it
     reads and writes this ledger. Send it like a house key — to your
@@ -790,6 +814,54 @@ async function settingsView() {
     <textarea id="invout" class="invite" readonly
       style="display:none;margin-top:8px"></textarea>
   </div>`;
+  $("#reckit").onclick = () => {
+    const stamp = new Date().toISOString().slice(0, 10);
+    download(`invoiceflow-solo-recovery-${stamp}.txt`,
+`InvoiceFlow Solo — RECOVERY KIT (${stamp})
+=========================================
+This string IS the master key to your ledger. Anyone holding it can
+read and write your books. Store it like a house key: password
+manager, printed copy in a safe — never email, never cloud notes.
+
+To recover on any device: open the app, choose a passphrase, paste
+the line below into the invite box. Your records return from the
+network. (Python: Owner.accept(state, passphrase, invite).)
+
+${db.invite()}
+`, "text/plain");
+    toast("recovery kit downloaded — store it like a house key");
+  };
+  $("#expjson").onclick = guard(async () => {
+    const out = { app: "invoiceflow-solo", exported_at: Date.now(),
+      records: {} };
+    const names = { 1: "profile", 2: "customers", 3: "items",
+      4: "invoices", 5: "conditions" };
+    for (const [k, nm] of Object.entries(names))
+      out.records[nm] = (await listKind(+k)).map(strip);
+    const stamp = new Date().toISOString().slice(0, 10);
+    download(`invoiceflow-solo-export-${stamp}.json`,
+      JSON.stringify(out, null, 1), "application/json");
+    const n = Object.values(out.records).reduce((a, v) => a + v.length, 0);
+    toast(`${n} record(s) exported — the file is UNENCRYPTED`);
+  });
+  $("#impjson").onclick = guard(async () => {
+    const file = $("#impfile").files[0];
+    if (!file) return toast("choose an export file first");
+    const d = JSON.parse(await file.text());
+    const recs = Object.values(d.records || {}).flat()
+      .filter((r) => r && r.kind >= 1 && r.kind <= 5)
+      .map((r) => { const { _rid, ...rec } = r; return rec; });
+    if (!recs.length) return toast("no records found in that file");
+    // records keep their lid/rev, so re-importing the same export is
+    // harmless for anything written since the identity pattern —
+    // dedupe keeps the highest revision. Pre-pattern records (no lid)
+    // would duplicate on a second import; visible, deletable.
+    for (let i = 0; i < recs.length; i += 25)
+      await db.insertMany(recs.slice(i, i + 25));
+    toast(`${recs.length} record(s) imported`);
+    await loadProfile();
+    go();
+  });
   $("#addterm").onclick = guard(async () => {
     const text = $("#newterm").value.trim();
     if (!text) return toast("type a term first");
