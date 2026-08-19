@@ -852,13 +852,33 @@ ${db.invite()}
       .filter((r) => r && r.kind >= 1 && r.kind <= 5)
       .map((r) => { const { _rid, ...rec } = r; return rec; });
     if (!recs.length) return toast("no records found in that file");
-    // records keep their lid/rev, so re-importing the same export is
-    // harmless for anything written since the identity pattern —
-    // dedupe keeps the highest revision. Pre-pattern records (no lid)
-    // would duplicate on a second import; visible, deletable.
-    for (let i = 0; i < recs.length; i += 25)
-      await db.insertMany(recs.slice(i, i + 25));
-    toast(`${recs.length} record(s) imported`);
+    // Import must be safe to run twice. Lid-bearing records are
+    // skipped unless the file carries a NEWER revision; records
+    // without lid (written before the identity pattern) are matched
+    // by content — same kind, same fields, same values means it is
+    // already in the books. First import round-trip duplicated every
+    // pre-pattern customer, item and term; this is the protection.
+    const existing = [];
+    for (const k of [1, 2, 3, 4, 5]) existing.push(...await listKind(k));
+    const fp = (r) => {
+      const { _rid, lid, rev, ...core } = r;
+      return r.kind + "|" + JSON.stringify(
+        Object.keys(core).sort().map((k2) => [k2, core[k2]]));
+    };
+    const haveFp = new Set(existing.map(fp));
+    const haveLid = new Map(existing.filter((r) => r.lid)
+      .map((r) => [r.lid, r.rev || 0]));
+    const fresh = recs.filter((r) => {
+      if (r.lid) {
+        const cur = haveLid.get(r.lid);
+        return cur === undefined || (r.rev || 0) > cur;
+      }
+      return !haveFp.has(fp(r));
+    });
+    for (let i = 0; i < fresh.length; i += 25)
+      await db.insertMany(fresh.slice(i, i + 25));
+    toast(`${fresh.length} imported, ${recs.length - fresh.length} ` +
+      `already in the books — skipped`);
     await loadProfile();
     go();
   });
