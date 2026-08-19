@@ -174,7 +174,7 @@
 <div id="print-root"></div>
 
 <script type="module">
-import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js?v=8";
+import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js?v=9";
 
 /* ------------------------------------------------------------------ *
  * One database, one schema, a `kind` discriminator — five entity
@@ -374,10 +374,12 @@ function unlockView(msg = "") {
       // custody — the right trade for a ledger.
       db.writeAcks = 3;
       if (sessionOnly) {
-        // a throwaway view doesn't earn a full mirror walk: read the
-        // network per page (seconds, strict-quorum correct) instead of
-        // gating minutes on a warmup that dies with the tab
-        await db.enableMirror();      // cache hits only; never "fresh"
+        // session views: cached hits are instant, absence goes to the
+        // network, and a background walk flips the whole view local
+        // in a few minutes
+        await db.enableMirror();
+        db.sync().then(() => toast("view is fully local now"))
+          .catch(() => {});
       } else {
       const mir = await db.enableMirror("invoiceflow-solo-mirror");
       if (!mir.completeOnce) {
