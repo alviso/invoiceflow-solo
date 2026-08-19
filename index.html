@@ -201,19 +201,46 @@ let draftFrom = null;        // invoice being duplicated into the form
 let editFrom = null;         // invoice being edited (same number, new rev)
 
 /* ------------------------------- data -------------------------------- */
-const listKind = (k) => db.query("kind", k, k);
+// Identity + a merge rule instead of uniqueness constraints. Every
+// record carries a stable logical id (lid, minted at create, preserved
+// through updates) and a monotonic rev. Readers keep the highest rev
+// per lid and lazily tombstone shadowed copies; records written before
+// this pattern keep their own identity and never collapse.
+const newLid = () => Array.from(crypto.getRandomValues(new Uint8Array(6)))
+  .map((b) => b.toString(16).padStart(2, "0")).join("");
+
+function dedupe(rows) {
+  const by = new Map();
+  const losers = [];
+  for (const r of rows) {
+    const k = r.lid || "_" + r._rid;
+    const cur = by.get(k);
+    if (!cur) { by.set(k, r); continue; }
+    const win = (r.rev || 0) > (cur.rev || 0) ||
+      ((r.rev || 0) === (cur.rev || 0) && r._rid > cur._rid);
+    if (win) { losers.push(cur); by.set(k, r); }
+    else losers.push(r);
+  }
+  if (losers.length)
+    db.deleteMany(losers.map((l) => l._rid)).catch(() => {});
+  return [...by.values()];
+}
+const listKind = async (k) => dedupe(await db.query("kind", k, k));
+
 async function loadProfile() {
   const rows = await listKind(K.profile);
   profile = rows.sort((a, b) => (b.saved_at || 0) - (a.saved_at || 0))[0]
     || null;
   return profile;
 }
-// records are immutable ciphertext: an update is delete + reinsert.
-// A crash between the two leaves a visible duplicate, never a hole —
-// loadProfile picks the newest and duplicates are harmless.
-async function replace(rec, rid) {
+// create (prev = null) and update through one door: the lid survives
+// the update, rev increments, and the old version is tombstoned after
+// the new one is durable — duplicate on crash, hole never.
+async function replace(rec, prev) {
+  rec.lid = (prev && prev.lid) || rec.lid || newLid();
+  rec.rev = ((prev && prev.rev) || 0) + 1;
   await db.insert(rec);
-  if (rid) await db.delete(rid);
+  if (prev && prev._rid) await db.delete(prev._rid);
 }
 
 /* ------------------------------ unlock ------------------------------- */
