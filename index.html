@@ -172,6 +172,21 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
             "'": "&#39;" }[c]));
 const money = (n, cur) => new Intl.NumberFormat(undefined,
   { style: "currency", currency: cur || "USD" }).format(n || 0);
+let mlock = false;
+// Every mutation handler goes through here: the button disables, and a
+// second click while the first write is in flight does NOTHING. Seven
+// cancelled copies of invoice #10001 exist because this did not.
+const guard = (fn) => async (ev) => {
+  if (mlock) return;
+  mlock = true;
+  const b = ev && ev.target && ev.target.tagName === "BUTTON"
+    ? ev.target : null;
+  if (b) b.disabled = true;
+  try { await fn(ev); }
+  catch (e) { console.error(e); toast("refused: " + e.message); }
+  finally { mlock = false; if (b) b.disabled = false; }
+};
+
 let toastT;
 function toast(msg) {
   $("#toast").textContent = msg;
@@ -314,6 +329,8 @@ async function invoiceDetail(rid) {
       ${flow[r.status] ? `<button class="ghost" id="advance">Mark ${flow[r.status]}</button>` : ""}
       ${r.status !== "cancelled" && r.status !== "paid"
         ? '<button class="quiet" id="cancel">Cancel</button>' : ""}
+      ${r.status === "cancelled"
+        ? '<button class="quiet" id="delinv">Delete permanently</button>' : ""}
     </div>
     <div class="grid2">
       <div><label>Billed to</label>
@@ -337,15 +354,19 @@ async function invoiceDetail(rid) {
       &nbsp;·&nbsp; <b>Total ${money(r.total, r.currency)}</b></p>
   </div>`;
   $("#pdf").onclick = () => { renderPrint(r); window.print(); };
-  const setStatus = async (status) => {
-    try {
-      await replace({ ...strip(r), status }, r._rid);
-      toast(`invoice #${r.num} ${status}`);
-      go("invoices");
-    } catch (e) { console.error(e); toast("refused: " + e.message); }
-  };
-  if ($("#advance")) $("#advance").onclick = () => setStatus(flow[r.status]);
-  if ($("#cancel")) $("#cancel").onclick = () => setStatus("cancelled");
+  const setStatus = (status) => guard(async () => {
+    await replace({ ...strip(r), status }, r._rid);
+    toast(`invoice #${r.num} ${status}`);
+    go("invoices");
+  });
+  if ($("#advance")) $("#advance").onclick = setStatus(flow[r.status]);
+  if ($("#cancel")) $("#cancel").onclick = setStatus("cancelled");
+  if ($("#delinv")) $("#delinv").onclick = guard(async () => {
+    if (!confirm(`Delete cancelled invoice #${r.num} permanently?`)) return;
+    await db.delete(r._rid);
+    toast(`invoice #${r.num} deleted`);
+    go("invoices");
+  });
 }
 const strip = (r) => { const { _rid, ...rec } = r; return rec; };
 
@@ -564,19 +585,17 @@ function entityView(kindNo, title, fields, cols) {
       $("#cancel-ent").style.display = rid ? "" : "none";
     };
     $("#cancel-ent").onclick = () => { setForm(null); setMode(null); };
-    $("#save-ent").onclick = async () => {
-      try {
-        const rec = { kind: kindNo };
-        for (const f of fields) {
-          const v = $(`#f-${f.key}`).value;
-          rec[f.key] = f.type === "number" ? +v || 0 : v;
-        }
-        if (!rec.display_name) return toast("a name is required");
-        rec.name = rec.display_name.slice(0, 6).toLowerCase();
-        await replace(rec, editRid);
-        go();
-      } catch (e) { console.error(e); toast("refused: " + e.message); }
-    };
+    $("#save-ent").onclick = guard(async () => {
+      const rec = { kind: kindNo };
+      for (const f of fields) {
+        const v = $(`#f-${f.key}`).value;
+        rec[f.key] = f.type === "number" ? +v || 0 : v;
+      }
+      if (!rec.display_name) return toast("a name is required");
+      rec.name = rec.display_name.slice(0, 6).toLowerCase();
+      await replace(rec, editRid);
+      go();
+    });
     for (const a of document.querySelectorAll("a.edit"))
       a.onclick = () => {
         setForm(byRid[a.dataset.rid]);
@@ -584,10 +603,7 @@ function entityView(kindNo, title, fields, cols) {
         window.scrollTo({ top: 0, behavior: "smooth" });
       };
     for (const a of document.querySelectorAll("a.del"))
-      a.onclick = async () => {
-        try { await db.delete(a.dataset.rid); go(); }
-        catch (e) { console.error(e); toast("refused: " + e.message); }
-      };
+      a.onclick = guard(async () => { await db.delete(a.dataset.rid); go(); });
   };
 }
 const customersView = entityView(K.customer, "Customers", [
@@ -656,22 +672,17 @@ async function settingsView() {
     <textarea id="invout" class="invite" readonly
       style="display:none;margin-top:8px"></textarea>
   </div>`;
-  $("#addterm").onclick = async () => {
-    try {
-      const text = $("#newterm").value.trim();
-      if (!text) return toast("type a term first");
-      if (conds.find((c) => c.text.toLowerCase() === text.toLowerCase()))
-        return toast("that term already exists");
-      await db.insert({ kind: K.condition, text, uses: 0 });
-      toast(`"${text}" saved`);
-      go();
-    } catch (e) { console.error(e); toast("refused: " + e.message); }
-  };
+  $("#addterm").onclick = guard(async () => {
+    const text = $("#newterm").value.trim();
+    if (!text) return toast("type a term first");
+    if (conds.find((c) => c.text.toLowerCase() === text.toLowerCase()))
+      return toast("that term already exists");
+    await db.insert({ kind: K.condition, text, uses: 0 });
+    toast(`"${text}" saved`);
+    go();
+  });
   for (const a of document.querySelectorAll("a.delterm"))
-    a.onclick = async () => {
-      try { await db.delete(a.dataset.rid); go(); }
-      catch (e) { console.error(e); toast("refused: " + e.message); }
-    };
+    a.onclick = guard(async () => { await db.delete(a.dataset.rid); go(); });
   $("#mkinv").onclick = () => {
     $("#invout").style.display = "block";
     $("#invout").value = db.invite();
