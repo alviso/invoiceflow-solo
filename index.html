@@ -198,6 +198,7 @@ function toast(msg) {
 let db = null;
 let profile = null;          // the kind=1 singleton, cached
 let draftFrom = null;        // invoice being duplicated into the form
+let editFrom = null;         // invoice being edited (same number, new rev)
 
 /* ------------------------------- data -------------------------------- */
 const listKind = (k) => db.query("kind", k, k);
@@ -300,20 +301,42 @@ async function invoicesView() {
     .sort((a, b) => b.num - a.num);
   $("#view").innerHTML = `
   <h2>Invoices</h2>
-  <div class="card"><table>
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <input id="q" placeholder="search customer or #"
+        style="max-width:260px">
+      <select id="fstat" style="max-width:170px">
+        <option value="">all statuses</option>
+        <option>created</option><option>sent</option>
+        <option>paid</option><option>cancelled</option>
+      </select>
+    </div>
+    <table>
     <tr><th>#</th><th>Customer</th><th>Issued</th><th class="right">Total</th>
         <th>Status</th></tr>
-    ${rows.map((r) => `
+    <tbody id="invbody"></tbody>
+  </table></div>`;
+  const renderRows = () => {
+    const q = ($("#q").value || "").toLowerCase();
+    const st = $("#fstat").value;
+    const vis = rows.filter((r) =>
+      (!st || r.status === st) &&
+      (!q || String(r.num).includes(q) ||
+        (r.customer_name || "").toLowerCase().includes(q)));
+    $("#invbody").innerHTML = vis.map((r) => `
     <tr class="click" data-rid="${r._rid}">
       <td>${r.num}</td><td>${esc(r.customer_name)}</td>
       <td>${esc(r.issue_date)}</td>
       <td class="right">${money(r.total, r.currency)}</td>
       <td><span class="pill ${r.status}">${r.status}</span></td>
     </tr>`).join("") ||
-    '<tr><td colspan="5" class="muted">No invoices yet.</td></tr>'}
-  </table></div>`;
-  for (const tr of document.querySelectorAll("tr.click"))
-    tr.onclick = () => go("invoice", tr.dataset.rid);
+    '<tr><td colspan="5" class="muted">Nothing matches.</td></tr>';
+    for (const tr of document.querySelectorAll("tr.click"))
+      tr.onclick = () => go("invoice", tr.dataset.rid);
+  };
+  $("#q").oninput = renderRows;
+  $("#fstat").onchange = renderRows;
+  renderRows();
 }
 
 async function invoiceDetail(rid) {
@@ -333,6 +356,8 @@ async function invoiceDetail(rid) {
       ${r.status === "cancelled"
         ? '<button class="quiet" id="delinv">Delete permanently</button>' : ""}
       <button class="ghost" id="dup">Duplicate</button>
+      ${r.status === "created"
+        ? '<button class="ghost" id="edit">Edit</button>' : ""}
     </div>
     <div class="grid2">
       <div><label>Billed to</label>
@@ -357,6 +382,7 @@ async function invoiceDetail(rid) {
   </div>`;
   $("#pdf").onclick = () => { renderPrint(r); window.print(); };
   $("#dup").onclick = () => { draftFrom = r; go("new"); };
+  if ($("#edit")) $("#edit").onclick = () => { editFrom = r; go("new"); };
   const setStatus = (status) => guard(async () => {
     await replace({ ...strip(r), status }, r);
     toast(`invoice #${r.num} ${status}`);
@@ -415,7 +441,7 @@ async function newInvoiceView() {
     ...conds.sort((a, b) => (b.uses || 0) - (a.uses || 0)).map((c) => c.text),
     "Due on receipt", "Net 7", "Net 15", "Net 30", "Net 45", "Net 60"])];
   $("#view").innerHTML = `
-  <h2>New invoice</h2>
+  <h2>${editing ? "Edit invoice #" + editing.num : "New invoice"}</h2>
   <div class="card">
     <div class="grid2">
       <div><label>Customer</label>
@@ -442,13 +468,15 @@ async function newInvoiceView() {
       <div><label>Footer notes</label><input id="notes"></div>
     </div>
     <p style="margin-top:16px" class="row">
-      <button id="save">Create invoice</button>
+      <button id="save">${editing ? "Save changes" : "Create invoice"}</button>
       <span class="muted" id="nmsg"></span></p>
   </div>`;
   const itemByName = Object.fromEntries(
     items.map((i) => [i.display_name || i.name, i]));
   const startDraft = draftFrom;
   draftFrom = null;
+  const editing = editFrom;
+  editFrom = null;
   const custByName = Object.fromEntries(
     customers.map((c) => [c.display_name || c.name, c]));
   $("#cname").onchange = () => {
@@ -488,18 +516,49 @@ async function newInvoiceView() {
   }
   addLine();
   $("#addline").onclick = () => addLine();
-  if (startDraft) {
-    // Duplicate: everything carries over except identity — the number
-    // is claimed fresh from the network at save, dates reset to today.
-    $("#cname").value = startDraft.customer_name || "";
-    $("#cur").value = startDraft.currency || cur;
-    $("#tax").value = startDraft.tax_rate || 0;
-    $("#cond").value = startDraft.payment_conditions || "";
-    $("#notes").value = startDraft.footer_notes || "";
+  const fillFrom = (d) => {
+    $("#cname").value = d.customer_name || "";
+    $("#cur").value = d.currency || cur;
+    $("#tax").value = d.tax_rate || 0;
+    $("#cond").value = d.payment_conditions || "";
+    $("#notes").value = d.footer_notes || "";
     document.querySelectorAll("#lines tr").forEach((tr, i) => {
       if (i) tr.remove();
     });
-    for (const li of startDraft.line_items || []) addLine(li);
+    for (const li of d.line_items || []) addLine(li);
+  };
+  const DRAFT_KEY = "ifs-draft";
+  const grabForm = () => ({
+    customer_name: $("#cname").value, currency: $("#cur").value,
+    tax_rate: +$("#tax").value || 0,
+    payment_conditions: $("#cond").value, footer_notes: $("#notes").value,
+    line_items: [...document.querySelectorAll("#lines tr")].slice(1)
+      .map((tr) => ({ description: tr.querySelector(".d").value,
+        quantity: +tr.querySelector(".q").value || 0,
+        unit_price: +tr.querySelector(".p").value || 0,
+        unit: tr.dataset.unit || "pcs" })) });
+  if (editing) {
+    fillFrom(editing);
+    $("#idate").value = editing.issue_date || today;
+  } else if (!startDraft) {
+    // draft autosave: the form survives a closed tab, like the original
+    try {
+      const d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+      if (d && (d.customer_name || (d.line_items || [])
+          .some((l) => l.description))) {
+        fillFrom(d);
+        toast("draft restored");
+      }
+    } catch { /* corrupt draft: start clean */ }
+    $("#view").oninput = () => {
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify(grabForm())); }
+      catch { /* storage full: autosave is best-effort */ }
+    };
+  }
+  if (startDraft) {
+    // Duplicate: everything carries over except identity — the number
+    // is claimed fresh from the network at save, dates reset to today.
+    fillFrom(startDraft);
     toast(`copied from invoice #${startDraft.num} — new number on save`);
   }
 
@@ -761,6 +820,7 @@ async function go(page, arg) {
   if (!db) return unlockView();
   for (const a of document.querySelectorAll("#nav a"))
     a.classList.toggle("on", a.dataset.page === cur.page);
+  $("#view").oninput = null;
   $("#view").innerHTML =
     '<p class="muted"><span class="spin"></span> loading\u2026</p>';
   try {
