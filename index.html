@@ -381,15 +381,15 @@ function unlockView(msg = "") {
       } else {
       const mir = await db.enableMirror("invoiceflow-solo-mirror");
       if (!mir.completeOnce) {
-        // ONE clean gate: letting the user in before the mirror is
-        // complete meant reads were network-slow for a while and then
-        // suddenly local-fast — varying reaction times train double
-        // clicks. First unlock waits and says so; every unlock after
-        // is instant because the mirror persists.
-        $("#umsg").innerHTML = '<span class="spin"></span> first unlock: ' +
-          'pulling your books into this browser\u2026';
-        const secs = await db.sync();
-        toast(`mirror complete (${Math.round(secs)}s) — every page is local from here on`);
+        // The complete mirror walk is minutes over a gateway network —
+        // measured, repeatedly. It does not belong in the gate: enter
+        // immediately with honest network reads (seconds per page,
+        // strict integrity), warm in the background, flip to local
+        // when done. Slow-then-fast is benign; the double-click hazard
+        // is handled by the mutation guards.
+        db.sync().then((secs) => {
+          toast(`mirror complete (${Math.round(secs)}s) — pages are local from here on`);
+        }).catch((e) => console.error("background warmup failed:", e));
       } else if (db._st.writers.length > 1) {
         db.sync().catch(() => {});      // refresh the multi-writer window
       }
