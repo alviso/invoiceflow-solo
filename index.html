@@ -386,7 +386,7 @@ async function newInvoiceView() {
       <div><label>Customer</label>
         <input id="cname" list="cust" placeholder="type or pick">
         <datalist id="cust">${customers.map((c) =>
-          `<option value="${esc(c.name)}">`).join("")}</datalist></div>
+          `<option value="${esc(c.display_name || c.name)}">`).join("")}</datalist></div>
       <div><label>Currency</label><input id="cur" value="${esc(cur)}"></div>
       <div><label>Issue date</label><input id="idate" type="date" value="${today}"></div>
       <div><label>Payment terms</label>
@@ -400,7 +400,7 @@ async function newInvoiceView() {
           <th class="right">Amount</th><th></th></tr>
     </table>
     <datalist id="iteml">${items.map((i) =>
-      `<option value="${esc(i.name)}">`).join("")}</datalist>
+      `<option value="${esc(i.display_name || i.name)}">`).join("")}</datalist>
     <p style="margin-top:8px"><button class="ghost" id="addline">+ line</button></p>
     <div class="grid2">
       <div><label>Tax rate %</label><input id="tax" type="number" value="0"></div>
@@ -410,7 +410,8 @@ async function newInvoiceView() {
       <button id="save">Create invoice</button>
       <span class="muted" id="nmsg"></span></p>
   </div>`;
-  const itemByName = Object.fromEntries(items.map((i) => [i.name, i]));
+  const itemByName = Object.fromEntries(
+    items.map((i) => [i.display_name || i.name, i]));
   function addLine() {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td><input class="d" list="iteml"></td>
@@ -426,7 +427,11 @@ async function newInvoiceView() {
     };
     tr.querySelector(".d").onchange = () => {
       const it = itemByName[tr.querySelector(".d").value];
-      if (it) { tr.querySelector(".p").value = it.default_price; recalc(); }
+      if (it) {
+        tr.querySelector(".p").value = it.default_price;
+        tr.dataset.unit = it.unit || "pcs";
+        recalc();
+      }
     };
     tr.oninput = recalc;
     tr.querySelector(".del").onclick = () => tr.remove();
@@ -439,7 +444,8 @@ async function newInvoiceView() {
       .map((tr) => ({
         description: tr.querySelector(".d").value.trim(),
         quantity: +tr.querySelector(".q").value || 0,
-        unit_price: +tr.querySelector(".p").value || 0, unit: "pcs" }))
+        unit_price: +tr.querySelector(".p").value || 0,
+        unit: tr.dataset.unit || "pcs" }))
       .filter((l) => l.description);
     const cname = $("#cname").value.trim();
     if (!cname || !lines.length)
@@ -453,7 +459,8 @@ async function newInvoiceView() {
       // gaps happen only on a crash after a claim — explainable, which
       // is what auditors actually require of invoice numbering.
       const num = 10000 + await db.nextValue("invoice");
-      const cust = customers.find((c) => c.name === cname) || {};
+      const cust = customers.find(
+        (c) => (c.display_name || c.name) === cname) || {};
       const subtotal = lines.reduce((s, l) => s + l.quantity * l.unit_price, 0);
       const taxRate = +$("#tax").value || 0;
       const condText = $("#cond").value.trim();
@@ -480,9 +487,11 @@ async function newInvoiceView() {
         status: "created", created_at: Date.now() });
       if (condText && !conds.find((c) => c.text === condText))
         await db.insert({ kind: K.condition, text: condText, uses: 1 });
-      if (!customers.find((c) => c.name === cname))
-        await db.insert({ kind: K.customer, name: cname.slice(0, 6).toLowerCase(),
-          display_name: cname, address: "", city: "", country: "" });
+      if (!customers.find((c) => (c.display_name || c.name) === cname))
+        await db.insert({ kind: K.customer,
+          name: cname.slice(0, 6).toLowerCase(), display_name: cname,
+          email: "", phone: "", address: "", city: "", postal_code: "",
+          country: "", tax_id: "" });
       toast(`invoice #${num} created`);
       go("invoices");
     } catch (e) {
@@ -494,37 +503,62 @@ async function newInvoiceView() {
 }
 
 /* ------------------------- customers & items ------------------------- */
-function crudView(kindNo, title, fields) {
+// Full-fidelity entity forms: the original's customer card has eight
+// fields and an edit flow; the first Solo cut had three and none —
+// the first thing its first user noticed. Update = delete + reinsert,
+// the same immutable-record pattern as everywhere else.
+function entityView(kindNo, title, fields, cols) {
   return async () => {
     const rows = await listKind(kindNo);
+    let editRid = null;
     $("#view").innerHTML = `
     <h2>${title}</h2>
-    <div class="card"><div class="grid3">
-      ${fields.map((f) => `<div><label>${f.label}</label>
+    <div class="card"><div class="grid2">
+      ${fields.map((f) => `<div><label>${f.label}${f.req ? " *" : ""}</label>
         <input id="f-${f.key}" ${f.type ? `type="${f.type}"` : ""}></div>`).join("")}
-    </div><p style="margin-top:12px"><button id="add">Add</button></p></div>
+    </div><p style="margin-top:12px" class="row">
+      <button id="save-ent">Add</button>
+      <button id="cancel-ent" class="quiet" style="display:none">Cancel</button>
+    </p></div>
     <div class="card"><table>
-      <tr>${fields.map((f) => `<th>${f.label}</th>`).join("")}<th></th></tr>
+      <tr>${cols.map((c) => `<th>${c.label}</th>`).join("")}<th></th></tr>
       ${rows.map((r) => `<tr>
-        ${fields.map((f) => `<td>${esc(r[f.show || f.key])}</td>`).join("")}
-        <td class="right"><a class="del" data-rid="${r._rid}">delete</a></td>
+        ${cols.map((c) => `<td>${esc(r[c.key] ?? "")}</td>`).join("")}
+        <td class="right"><a class="edit" data-rid="${r._rid}">edit</a>
+          &nbsp; <a class="del" data-rid="${r._rid}">delete</a></td>
       </tr>`).join("") ||
-      `<tr><td colspan="${fields.length + 1}" class="muted">None yet.</td></tr>`}
+      `<tr><td colspan="${cols.length + 1}" class="muted">None yet.</td></tr>`}
     </table></div>`;
-    $("#add").onclick = async () => {
+    const byRid = Object.fromEntries(rows.map((r) => [r._rid, r]));
+    const setForm = (r) => {
+      for (const f of fields)
+        $(`#f-${f.key}`).value = r ? (r[f.key] ?? "") : "";
+    };
+    const setMode = (rid) => {
+      editRid = rid;
+      $("#save-ent").textContent = rid ? "Update" : "Add";
+      $("#cancel-ent").style.display = rid ? "" : "none";
+    };
+    $("#cancel-ent").onclick = () => { setForm(null); setMode(null); };
+    $("#save-ent").onclick = async () => {
       try {
         const rec = { kind: kindNo };
         for (const f of fields) {
           const v = $(`#f-${f.key}`).value;
-          rec[f.show || f.key] = f.type === "number" ? +v || 0 : v;
+          rec[f.key] = f.type === "number" ? +v || 0 : v;
         }
-        const nm = rec.display_name || rec.name || "";
-        if (!nm) return toast("a name is required");
-        rec.name = nm.slice(0, 6).toLowerCase();   // the indexed prefix
-        await db.insert(rec);
+        if (!rec.display_name) return toast("a name is required");
+        rec.name = rec.display_name.slice(0, 6).toLowerCase();
+        await replace(rec, editRid);
         go();
       } catch (e) { console.error(e); toast("refused: " + e.message); }
     };
+    for (const a of document.querySelectorAll("a.edit"))
+      a.onclick = () => {
+        setForm(byRid[a.dataset.rid]);
+        setMode(a.dataset.rid);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      };
     for (const a of document.querySelectorAll("a.del"))
       a.onclick = async () => {
         try { await db.delete(a.dataset.rid); go(); }
@@ -532,15 +566,24 @@ function crudView(kindNo, title, fields) {
       };
   };
 }
-const customersView = crudView(K.customer, "Customers", [
-  { key: "name", label: "Name", show: "display_name" },
-  { key: "city", label: "City", show: "city" },
-  { key: "country", label: "Country", show: "country" }]);
-const itemsView = crudView(K.item, "Items", [
-  { key: "name", label: "Name", show: "display_name" },
-  { key: "price", label: "Default price", show: "default_price",
-    type: "number" },
-  { key: "unit", label: "Unit", show: "unit" }]);
+const customersView = entityView(K.customer, "Customers", [
+  { key: "display_name", label: "Name", req: 1 },
+  { key: "email", label: "Email" },
+  { key: "phone", label: "Phone" },
+  { key: "address", label: "Address" },
+  { key: "city", label: "City" },
+  { key: "postal_code", label: "Postal code" },
+  { key: "country", label: "Country" },
+  { key: "tax_id", label: "Tax ID" }],
+  [{ key: "display_name", label: "Name" }, { key: "city", label: "City" },
+   { key: "country", label: "Country" }, { key: "tax_id", label: "Tax ID" }]);
+const itemsView = entityView(K.item, "Items", [
+  { key: "display_name", label: "Name", req: 1 },
+  { key: "description", label: "Description" },
+  { key: "default_price", label: "Default price", type: "number" },
+  { key: "unit", label: "Unit (pcs, day, h\u2026)" }],
+  [{ key: "display_name", label: "Name" },
+   { key: "default_price", label: "Price" }, { key: "unit", label: "Unit" }]);
 
 /* ------------------------------ settings ----------------------------- */
 async function settingsView() {
