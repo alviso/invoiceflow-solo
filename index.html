@@ -412,6 +412,12 @@ async function newInvoiceView() {
   </div>`;
   const itemByName = Object.fromEntries(
     items.map((i) => [i.display_name || i.name, i]));
+  const custByName = Object.fromEntries(
+    customers.map((c) => [c.display_name || c.name, c]));
+  $("#cname").onchange = () => {
+    const c = custByName[$("#cname").value.trim()];
+    if (c && c.payment_terms) $("#cond").value = c.payment_terms;
+  };
   function addLine() {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td><input class="d" list="iteml"></td>
@@ -574,7 +580,8 @@ const customersView = entityView(K.customer, "Customers", [
   { key: "city", label: "City" },
   { key: "postal_code", label: "Postal code" },
   { key: "country", label: "Country" },
-  { key: "tax_id", label: "Tax ID" }],
+  { key: "tax_id", label: "Tax ID" },
+  { key: "payment_terms", label: "Payment terms (e.g. Net 45)" }],
   [{ key: "display_name", label: "Name" }, { key: "city", label: "City" },
    { key: "country", label: "Country" }, { key: "tax_id", label: "Tax ID" }]);
 const itemsView = entityView(K.item, "Items", [
@@ -588,6 +595,8 @@ const itemsView = entityView(K.item, "Items", [
 /* ------------------------------ settings ----------------------------- */
 async function settingsView() {
   const p = profile || {};
+  const conds = (await listKind(K.condition))
+    .sort((a, b) => (b.uses || 0) - (a.uses || 0));
   const F = [["name", "Company name"], ["address", "Address"],
     ["city", "City"], ["postal_code", "Postal code"],
     ["country", "Country"], ["tax_id", "Tax ID"], ["email", "Email"],
@@ -604,6 +613,21 @@ async function settingsView() {
   </div>
   <p style="margin-top:14px"><button id="save">Save profile</button></p></div>
   <div class="card">
+    <h2 style="font-size:16px">Payment terms</h2>
+    <p class="muted">Offered when writing invoices; a customer's
+    preferred term becomes that invoice's default. "Net N" sets the due
+    date N days after issue.</p>
+    <div class="row" style="margin-top:8px">
+      <input id="newterm" placeholder="Net 45" style="max-width:220px">
+      <button class="ghost" id="addterm">Add term</button></div>
+    <table style="margin-top:10px">
+      ${conds.map((c) => `<tr><td>${esc(c.text)}</td>
+        <td class="right"><a class="delterm" data-rid="${c._rid}">delete</a></td>
+      </tr>`).join("") ||
+      '<tr><td class="muted">None saved yet — terms used on invoices land here too.</td></tr>'}
+    </table>
+  </div>
+  <div class="card">
     <h2 style="font-size:16px">Devices &amp; access</h2>
     <p class="muted">An invite carries the master key: whoever holds it
     reads and writes this ledger. Send it like a house key — to your
@@ -614,6 +638,22 @@ async function settingsView() {
     <textarea id="invout" class="invite" readonly
       style="display:none;margin-top:8px"></textarea>
   </div>`;
+  $("#addterm").onclick = async () => {
+    try {
+      const text = $("#newterm").value.trim();
+      if (!text) return toast("type a term first");
+      if (conds.find((c) => c.text.toLowerCase() === text.toLowerCase()))
+        return toast("that term already exists");
+      await db.insert({ kind: K.condition, text, uses: 0 });
+      toast(`"${text}" saved`);
+      go();
+    } catch (e) { console.error(e); toast("refused: " + e.message); }
+  };
+  for (const a of document.querySelectorAll("a.delterm"))
+    a.onclick = async () => {
+      try { await db.delete(a.dataset.rid); go(); }
+      catch (e) { console.error(e); toast("refused: " + e.message); }
+    };
   $("#mkinv").onclick = () => {
     $("#invout").style.display = "block";
     $("#invout").value = db.invite();
