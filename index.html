@@ -188,7 +188,7 @@
 <div id="print-root"></div>
 
 <script type="module">
-import { Owner, idbAdapter } from "./blindrange.js?v=16";
+import { Owner, idbAdapter } from "./blindrange.js?v=17";
 
 /* ------------------------------------------------------------------ *
  * One database, one schema, a `kind` discriminator — five entity
@@ -499,16 +499,30 @@ function unlockView(msg = "") {
       window.__db = db;               // debug handle, costs nothing
       const mir = await db.enableMirror(
         guestId ? guestMirrorName(guestId) : "invoiceflow-solo-mirror");
+      const warmup = { retrying: false };
       if (!mir.completeOnce) {
         // The complete mirror walk is minutes over a gateway network —
         // measured, repeatedly. It does not belong in the gate: enter
         // immediately with honest network reads (seconds per page,
         // strict integrity), warm in the background, flip to local
-        // when done. Slow-then-fast is benign; the double-click hazard
-        // is handled by the mutation guards.
-        db.sync().then((secs) => {
-          toast(`mirror complete (${Math.round(secs)}s) — pages are local from here on`);
-        }).catch((e) => console.error("background warmup failed:", e));
+        // when done. A degraded moment mid-walk used to kill the
+        // warmup silently and freeze the strip — now it retries, says
+        // so, and (since the walk is resumable) picks up roughly
+        // where it stopped.
+        (async () => {
+          while (!db.mirror.completeOnce) {
+            try {
+              warmup.retrying = false;
+              const secs = await db.sync();
+              toast(`mirror complete (${Math.round(secs)}s) — pages are local from here on`);
+              break;
+            } catch (e) {
+              console.error("warmup attempt failed:", e);
+              warmup.retrying = true;
+              await new Promise((r) => setTimeout(r, 15000));
+            }
+          }
+        })();
       } else if (db._st.writers.length > 1) {
         // returning to a known ledger: one boundary probe re-stamps
         // the window when nothing changed — warm in seconds
@@ -558,6 +572,10 @@ function unlockView(msg = "") {
               "background verification"
             : "warming this view — pages answer from the network " +
               "until your local mirror completes";
+        } else if (warmup.retrying) {
+          wb.style.display = "flex";
+          $("#warmtext").textContent =
+            "verification hit a degraded network moment — retrying";
         }
       }, 500);
       const keepFresh = { busy: false };
