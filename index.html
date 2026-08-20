@@ -373,13 +373,22 @@ function unlockView(msg = "") {
       // whole ledger unreadable for minutes. Slower writes, stronger
       // custody — the right trade for a ledger.
       db.writeAcks = 3;
+      // chain counters answered from cache for 30s after a probe: the
+      // staleness bargain that makes page switches instant while the
+      // background walk earns full locality (5s default re-probed on
+      // every switch and bought nothing)
+      db.probeTtlS = 30;
+      window.__db = db;               // debug handle, costs nothing
       if (sessionOnly) {
         // session views: cached hits are instant, absence goes to the
         // network, and a background walk flips the whole view local
         // in a few minutes
         await db.enableMirror();
         db.sync().then(() => toast("view is fully local now"))
-          .catch(() => {});
+          .catch((e) => {
+            console.error("session warmup failed:", e);
+            toast("background warmup failed — pages stay network-read");
+          });
       } else {
       const mir = await db.enableMirror("invoiceflow-solo-mirror");
       if (!mir.completeOnce) {
