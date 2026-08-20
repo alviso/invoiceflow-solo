@@ -94,6 +94,10 @@
   .lines th, .lines td { padding:6px; }
   .lines input { padding:6px 8px; }
   textarea.invite { font:11px ui-monospace, Menlo, monospace; min-height:70px; }
+  .ledger-row { display:flex; gap:10px; align-items:baseline;
+                padding:7px 10px; border:1px solid var(--line);
+                border-radius:8px; margin:4px 0; }
+  .ledger-row.on { border-color:var(--acc); background:#f3f6fc; }
 
   /* ------------------------------ unlock gate ----------------------- */
   .gate { position:fixed; inset:0; display:grid;
@@ -184,7 +188,7 @@
 <div id="print-root"></div>
 
 <script type="module">
-import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js?v=16";
+import { Owner, idbAdapter } from "./blindrange.js?v=16";
 
 /* ------------------------------------------------------------------ *
  * One database, one schema, a `kind` discriminator — five entity
@@ -299,6 +303,65 @@ async function replace(rec, prev) {
   if (prev && prev._rid) await db.delete(prev._rid);
 }
 
+/* --------------------------- ledger profiles ------------------------- */
+// A guest ledger (joined by invite) persists like the device's own:
+// a sealed state slot (writer identity, unlocked only by the guest's
+// passphrase), an encrypted mirror, and one registry line so the gate
+// can offer the way back. What this browser then holds is the same
+// ciphertext the storage nodes hold, plus the FACT that it viewed
+// that ledger — disclosed on the gate, wiped by "forget". Persisting
+// the writer also means joining enrolls ONE writer ever, instead of
+// one per visit (the old session views left junk writers behind, and
+// every reader pays for each of them on every chain).
+const PROFILES_KEY = "ifs-ledgers";
+const profilesList = () => {
+  try { return JSON.parse(localStorage.getItem(PROFILES_KEY)) || []; }
+  catch { return []; }
+};
+const profilesSave = (l) =>
+  localStorage.setItem(PROFILES_KEY, JSON.stringify(l));
+const profileUpsert = (id, label) => {
+  const l = profilesList().filter((q) => q.id !== id);
+  l.unshift({ id, label, lastOpened: Date.now() });
+  profilesSave(l.slice(0, 8));
+};
+async function ledgerIdFromInvite(inv) {
+  const d = JSON.parse(atob(inv));
+  if (!d.master) throw new Error("no master in invite");
+  const h = await crypto.subtle.digest("SHA-256",
+    new TextEncoder().encode("ifs-ledger:" + d.master));
+  return Array.from(new Uint8Array(h)).slice(0, 4)
+    .map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+const guestSlotName = (id) => "invoiceflow-solo:guest:" + id;
+const guestMirrorName = (id) => "ifs-mirror-" + id;
+async function forgetLedger(id) {
+  await new Promise((res, rej) => {
+    const q = indexedDB.open("blindrange", 1);
+    q.onupgradeneeded = () => q.result.createObjectStore("state");
+    q.onsuccess = () => {
+      const t = q.result.transaction("state", "readwrite");
+      t.objectStore("state").delete(guestSlotName(id));
+      t.oncomplete = res;
+      t.onerror = () => rej(t.error);
+    };
+    q.onerror = () => rej(q.error);
+  });
+  await new Promise((res) => {
+    const q = indexedDB.open("blindrange-mirror", 1);
+    q.onupgradeneeded = () => q.result.createObjectStore("kv");
+    q.onsuccess = () => {
+      const pfx = guestMirrorName(id) + "\u0000";
+      const t = q.result.transaction("kv", "readwrite");
+      t.objectStore("kv").delete(IDBKeyRange.bound(pfx, pfx + "\uffff"));
+      t.oncomplete = res;
+      t.onerror = res;
+    };
+    q.onerror = res;
+  });
+  profilesSave(profilesList().filter((q) => q.id !== id));
+}
+
 /* ------------------------------ unlock ------------------------------- */
 function unlockView(msg = "") {
   $("#chrome").style.display = "none";
@@ -313,6 +376,19 @@ function unlockView(msg = "") {
         <p class="muted" style="margin-bottom:6px">The passphrase unlocks
         this browser's copy of the master key. First time here? The same
         passphrase creates a new ledger.</p>
+        ${profilesList().length ? `<div style="margin-bottom:4px">
+        <label>Ledgers this browser knows</label>
+        ${profilesList().map((q) => `<div class="ledger-row"
+          data-id="${q.id}"><a class="lopen" data-id="${q.id}"
+          >${esc(q.label || "guest ledger " + q.id)}</a>
+          <span class="muted" style="font-size:11.5px">last opened
+          ${new Date(q.lastOpened).toLocaleString()}</span>
+          <a class="lforget muted" data-id="${q.id}"
+             style="margin-left:auto">forget</a></div>`).join("")}
+        <p class="muted" style="font-size:12px;margin:6px 0 2px">Guest
+        ledgers keep an encrypted copy in this browser — the same
+        ciphertext the storage nodes hold. Forget wipes it.</p>
+        </div>` : ""}
         <label>Passphrase</label>
         <input id="pass" type="password" autocomplete="current-password">
         <label>Invite (only when joining an existing ledger)</label>
@@ -342,6 +418,21 @@ function unlockView(msg = "") {
       browser.</p>
     </div></div>
   </div>`;
+  let selGuest = null;
+  for (const a of document.querySelectorAll("a.lopen"))
+    a.onclick = () => {
+      selGuest = selGuest === a.dataset.id ? null : a.dataset.id;
+      for (const r of document.querySelectorAll(".ledger-row"))
+        r.classList.toggle("on", r.dataset.id === selGuest);
+      if (selGuest) { $("#inv").value = ""; $("#pass").focus(); }
+    };
+  for (const a of document.querySelectorAll("a.lforget"))
+    a.onclick = async () => {
+      if (!confirm("Forget this ledger's local copy? Rejoining later " +
+        "needs the invite again and enrolls a fresh writer.")) return;
+      await forgetLedger(a.dataset.id);
+      unlockView("forgotten");
+    };
   $("#go").onclick = async () => {
     const pass = $("#pass").value;
     if (!pass) return toast("a passphrase is required");
@@ -350,21 +441,40 @@ function unlockView(msg = "") {
     const adapter = idbAdapter("invoiceflow-solo");
     try {
       const inv = $("#inv").value.trim();
-      const hasState = (await adapter.load()) !== null;
-      let sessionOnly = false;
-      if (inv && hasState) {
-        // This device already has its own ledger: an invite opens the
-        // OTHER ledger as a session-only view — memory state, memory
-        // mirror, nothing on this device touched. (Before this rule,
-        // the invite was silently ignored and the wrong-passphrase
-        // failure had an empty message: "nothing happened".)
-        sessionOnly = true;
-        db = await Owner.accept(memoryAdapter(), pass, inv,
-          { gateway: NET.gateway });
-      } else if (inv) {
-        // fresh device + invite = the recovery-kit flow: join
-        // permanently under a new passphrase
-        db = await Owner.accept(adapter, pass, inv, { gateway: NET.gateway });
+      const wrongPass = (what) => (e) => {
+        if (e && (e.name === "OperationError" || !e.message))
+          throw new Error("wrong passphrase for " + what);
+        throw e;
+      };
+      let guestId = null;
+      if (inv) {
+        let id;
+        try { id = await ledgerIdFromInvite(inv); }
+        catch { throw new Error("that invite does not parse"); }
+        const hasOwn = (await adapter.load()) !== null;
+        const slot = idbAdapter(guestSlotName(id));
+        if (!hasOwn) {
+          // fresh device + invite = the recovery-kit flow: this
+          // ledger BECOMES the device's own
+          db = await Owner.accept(adapter, pass, inv,
+            { gateway: NET.gateway });
+        } else if ((await slot.load()) !== null) {
+          // already joined once — the stored slot has the writer;
+          // the invite is redundant, the passphrase is what counts
+          db = await Owner.open(slot, pass, { gateway: NET.gateway })
+            .catch(wrongPass("this ledger"));
+          guestId = id;
+        } else {
+          // first join from this browser: persist the slot so coming
+          // back is a passphrase, not a re-walk and a fresh writer
+          db = await Owner.accept(slot, pass, inv,
+            { gateway: NET.gateway });
+          guestId = id;
+        }
+      } else if (selGuest) {
+        db = await Owner.open(idbAdapter(guestSlotName(selGuest)), pass,
+          { gateway: NET.gateway }).catch(wrongPass("this ledger"));
+        guestId = selGuest;
       } else {
         try {
           db = await Owner.open(adapter, pass, { gateway: NET.gateway });
@@ -372,9 +482,7 @@ function unlockView(msg = "") {
           if (String(e).includes("no state stored")) {
             db = await Owner.create(adapter, pass, SCHEMA, NET.bootstrap,
               { networkSecret: NET.networkSecret, gateway: NET.gateway });
-          } else if (e && (e.name === "OperationError" || !e.message)) {
-            throw new Error("wrong passphrase for this device's ledger");
-          } else throw e;
+          } else wrongPass("this device's ledger")(e);
         }
       }
       // Books deserve all three copies BEFORE the save returns. The
@@ -389,18 +497,8 @@ function unlockView(msg = "") {
       // every switch and bought nothing)
       db.probeTtlS = 30;
       window.__db = db;               // debug handle, costs nothing
-      if (sessionOnly) {
-        // session views: cached hits are instant, absence goes to the
-        // network, and a background walk flips the whole view local
-        // in a few minutes
-        await db.enableMirror();
-        db.sync().then(() => toast("view is fully local now"))
-          .catch((e) => {
-            console.error("session warmup failed:", e);
-            toast("background warmup failed — pages stay network-read");
-          });
-      } else {
-      const mir = await db.enableMirror("invoiceflow-solo-mirror");
+      const mir = await db.enableMirror(
+        guestId ? guestMirrorName(guestId) : "invoiceflow-solo-mirror");
       if (!mir.completeOnce) {
         // The complete mirror walk is minutes over a gateway network —
         // measured, repeatedly. It does not belong in the gate: enter
@@ -412,8 +510,9 @@ function unlockView(msg = "") {
           toast(`mirror complete (${Math.round(secs)}s) — pages are local from here on`);
         }).catch((e) => console.error("background warmup failed:", e));
       } else if (db._st.writers.length > 1) {
-        db.sync().catch(() => {});      // refresh the multi-writer window
-      }
+        // returning to a known ledger: one boundary probe re-stamps
+        // the window when nothing changed — warm in seconds
+        db.sync().catch((e) => console.error("re-warm failed:", e));
       }
       // Keep the mirror inside its freshness window forever: once the
       // first complete walk lands, each timer pass is ONE quick network
@@ -470,10 +569,14 @@ function unlockView(msg = "") {
           .finally(() => { keepFresh.busy = false; });
       }, 12000);
       await loadProfile();
+      if (guestId)
+        profileUpsert(guestId,
+          (profile && profile.name) ? profile.name
+            : "guest ledger " + guestId);
       $("#chrome").style.display = "flex";
       $("#netinfo").textContent =
         `${db.network().length} nodes · ${db._st.writers.length} writer(s)` +
-        (sessionOnly ? " · session-only view" : "");
+        (guestId ? " · guest ledger (cached encrypted here)" : "");
       go(profile ? "dash" : "settings");
       if (!profile) toast("welcome — set up your company first");
     } catch (e) {
