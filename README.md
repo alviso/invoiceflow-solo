@@ -42,7 +42,7 @@ node publish.mjs index.html     # prints loader.html#<hash>
 ```
 
 This build is live from the network:
-[`loader.html#e16380b2…`](https://alviso.github.io/invoiceflow-solo/loader.html#e16380b2e85daefc0d7df2d62b4524cd470cf2483a077970c9bfc1cfe2d06393)
+[`loader.html#9e92231c…`](https://alviso.github.io/invoiceflow-solo/loader.html#9e92231c44cd2d8bf972c2c0b6885405194f96ee8b5d027d45e21b02d17edbed)
 
 ## Honesty section
 
