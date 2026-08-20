@@ -425,6 +425,23 @@ function unlockView(msg = "") {
       // local, then disappears. Honest numbers only — the percentage
       // is tree depth actually walked, not a guess.
       const wb = $("#warmbar");
+      // Working-set prefetch: every page in this app reads via kind
+      // queries. Running them once caches the whole working set;
+      // re-running them inside the 30s probe-TTL window keeps every
+      // click instant while the deep verification still runs. The
+      // "snappy" claim below is MEASURED — the second pass has to
+      // come back fast before the strip says so.
+      const prewarm = { snappy: false };
+      (async () => {
+        while (db.mirror && !db.mirror.completeOnce) {
+          try {
+            const t = Date.now();
+            for (const k of [1, 2, 3, 4, 5]) await db.query("kind", k, k);
+            prewarm.snappy = (Date.now() - t) < 500;
+          } catch (e) { console.error("prefetch failed:", e); }
+          await new Promise((r) => setTimeout(r, 20000));
+        }
+      })();
       const warmT = setInterval(() => {
         const pr = db.syncProgress;
         const m = db.mirror;
@@ -437,9 +454,11 @@ function unlockView(msg = "") {
           wb.style.display = "flex";
           $("#warmfill").style.width = (pr.pct || 0) + "%";
           $("#warmpct").textContent = (pr.pct || 0) + "%";
-          $("#warmtext").textContent =
-            "warming this view — pages answer from the network until " +
-            "your local mirror completes";
+          $("#warmtext").textContent = prewarm.snappy
+            ? "pages are serving locally already — finishing " +
+              "background verification"
+            : "warming this view — pages answer from the network " +
+              "until your local mirror completes";
         }
       }, 500);
       const keepFresh = { busy: false };
