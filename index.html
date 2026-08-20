@@ -85,6 +85,12 @@
            border-radius:9px; opacity:0; transition:opacity .25s;
            pointer-events:none; max-width:90vw; }
   #toast.show { opacity:1; }
+  #warmbar { display:none; align-items:center; gap:10px; width:100%;
+             font-size:12.5px; color:var(--dim); padding:7px 0 0; }
+  #warmbar .track { flex:1; height:4px; border-radius:99px;
+                    background:var(--line); overflow:hidden; }
+  #warmbar .fill { height:100%; width:0%; border-radius:99px;
+                   background:var(--acc); transition:width .5s; }
   .lines th, .lines td { padding:6px; }
   .lines input { padding:6px 8px; }
   textarea.invite { font:11px ui-monospace, Menlo, monospace; min-height:70px; }
@@ -167,6 +173,10 @@
       <a data-page="settings">Settings</a>
     </nav>
     <span class="push" id="netinfo"></span>
+  <div id="warmbar"><span class="spin"></span>
+    <span id="warmtext">warming this view…</span>
+    <div class="track"><div class="fill" id="warmfill"></div></div>
+    <span id="warmpct"></span></div>
   </header>
   <main id="view"></main>
 </div>
@@ -174,7 +184,7 @@
 <div id="print-root"></div>
 
 <script type="module">
-import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js?v=15";
+import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js?v=16";
 
 /* ------------------------------------------------------------------ *
  * One database, one schema, a `kind` discriminator — five entity
@@ -410,6 +420,28 @@ function unlockView(msg = "") {
       // round (the boundary probe) when nothing changed, and a real
       // walk only when something did. Without this the window lapses
       // ~30s after warmup and every navigation goes back to the WAN.
+      // Warmup indicator: the background walk publishes
+      // db.syncProgress; this strip renders it until the mirror flips
+      // local, then disappears. Honest numbers only — the percentage
+      // is tree depth actually walked, not a guess.
+      const wb = $("#warmbar");
+      const warmT = setInterval(() => {
+        const pr = db.syncProgress;
+        const m = db.mirror;
+        if (m && m.completeOnce && (!pr || !pr.active)) {
+          wb.style.display = "none";
+          clearInterval(warmT);
+          return;
+        }
+        if (pr && pr.active) {
+          wb.style.display = "flex";
+          $("#warmfill").style.width = (pr.pct || 0) + "%";
+          $("#warmpct").textContent = (pr.pct || 0) + "%";
+          $("#warmtext").textContent =
+            "warming this view — pages answer from the network until " +
+            "your local mirror completes";
+        }
+      }, 500);
       const keepFresh = { busy: false };
       setInterval(() => {
         if (keepFresh.busy || !db.mirror || !db.mirror.completeOnce)
