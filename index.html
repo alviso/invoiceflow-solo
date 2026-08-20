@@ -188,7 +188,7 @@
 <div id="print-root"></div>
 
 <script type="module">
-import { Owner, idbAdapter } from "./blindrange.js?v=18";
+import { Owner, idbAdapter } from "./blindrange.js?v=19";
 
 /* ------------------------------------------------------------------ *
  * One database, one schema, a `kind` discriminator — five entity
@@ -496,7 +496,10 @@ function unlockView(msg = "") {
       // background walk earns full locality (5s default re-probed on
       // every switch and bought nothing)
       db.probeTtlS = 30;
-      window.__db = db;               // debug handle, costs nothing
+      // Debug handle, opt-in only: this object holds the master key,
+      // and a page whose whole premise is "no third-party code runs
+      // here" should not park it on window by default.
+      if (location.hash.includes("debug")) window.__db = db;
       const mir = await db.enableMirror(
         guestId ? guestMirrorName(guestId) : "invoiceflow-solo-mirror");
       const warmup = { retrying: false };
