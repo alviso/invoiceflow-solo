@@ -174,7 +174,7 @@
 <div id="print-root"></div>
 
 <script type="module">
-import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js?v=10";
+import { Owner, idbAdapter, memoryAdapter } from "./blindrange.js?v=11";
 
 /* ------------------------------------------------------------------ *
  * One database, one schema, a `kind` discriminator — five entity
@@ -405,6 +405,19 @@ function unlockView(msg = "") {
         db.sync().catch(() => {});      // refresh the multi-writer window
       }
       }
+      // Keep the mirror inside its freshness window forever: once the
+      // first complete walk lands, each timer pass is ONE quick network
+      // round (the boundary probe) when nothing changed, and a real
+      // walk only when something did. Without this the window lapses
+      // ~30s after warmup and every navigation goes back to the WAN.
+      const keepFresh = { busy: false };
+      setInterval(() => {
+        if (keepFresh.busy || !db.mirror || !db.mirror.completeOnce)
+          return;
+        keepFresh.busy = true;
+        db.sync().catch((e) => console.error("freshness pass failed:", e))
+          .finally(() => { keepFresh.busy = false; });
+      }, 12000);
       await loadProfile();
       $("#chrome").style.display = "flex";
       $("#netinfo").textContent =
